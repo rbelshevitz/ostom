@@ -62,8 +62,8 @@ table и orphan nodes остаётся активной задачей v0.2.
 
 ## Текущее состояние
 
-Текущий этап — отчётчик и экспортёр в Thunderbird с ограничением памяти на
-базе `github.com/grokify/outlook-pst-go`:
+Текущий этап — диагностический инспектор и экспортёр в Thunderbird с
+ограничением памяти на базе `github.com/grokify/outlook-pst-go`:
 
 ```text
 ostom [--json] [--memory-limit 256] file.ost
