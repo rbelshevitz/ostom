@@ -93,6 +93,15 @@ These are focus and workflow advantages, not a claim that OSTOM currently
 decodes more PFF variants than mature projects such as libpff. Native property,
 table, and orphan-node salvage remains an active v0.2 milestone.
 
+### What can be recovered
+
+OSTOM preserves the folder hierarchy for readable indexed content and exports
+as much recoverable mail and attachment data as the file still exposes. A bad
+message or attachment should not discard the readable remainder. Damaged or
+orphaned items may be incomplete, duplicated, missing their original folder
+path, or placed in the separate `OSTOM Recovered` folder. The normal indexed
+export and the extended recovery export are intentionally kept distinguishable.
+
 ## Current status
 
 The current milestone implements a bounded-memory inspection and Thunderbird
