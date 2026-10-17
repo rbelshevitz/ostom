@@ -1,5 +1,8 @@
 # OSTOM — Goals and TODO
 
+> This is a contributor and engineering plan, not end-user documentation. For
+> installation and recovery instructions, start with [README](README.md).
+
 ## Project goal
 
 Build a safe utility for diagnosing, analyzing, and recovering mail from damaged Outlook `.ost`/`.pst` files, with export to Thunderbird-compatible formats.
