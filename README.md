@@ -61,11 +61,42 @@ table, and orphan-node salvage remains an active v0.2 milestone.
 
 ## Current status
 
-The first milestone implements a bounded-memory inspection CLI on top of `github.com/grokify/outlook-pst-go`:
+The current milestone implements a bounded-memory inspection and Thunderbird
+export CLI on top of `github.com/grokify/outlook-pst-go`:
 
 ```text
 ostom [--json] [--memory-limit 256] file.ost
 ```
+
+## Build and run
+
+Install Go 1.24 or newer, then run these commands from the repository root.
+Go downloads the declared modules automatically on the first build:
+
+```powershell
+go build -o ostom.exe ./cmd/ostom
+go build -o ostom-fixture.exe ./cmd/ostom-fixture
+go test ./...
+go vet ./...
+```
+
+Run the inspection against a copy of the source file:
+
+```powershell
+.\ostom.exe --output-dir E:\recovered source-copy.ost
+```
+
+Export readable indexed mail into a Thunderbird-compatible tree:
+
+```powershell
+.\ostom.exe --export-dir E:\recovered source-copy.ost
+```
+
+The export directory contains `Local Folders` mbox files. In Thunderbird,
+close the application, copy that `Local Folders` directory into the profile's
+`Mail` directory, then start Thunderbird and let it rebuild folder indexes.
+Keep the generated export as a backup until the messages and attachments have
+been checked.
 
 The main options are:
 

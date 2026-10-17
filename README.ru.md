@@ -62,11 +62,41 @@ table и orphan nodes остаётся активной задачей v0.2.
 
 ## Текущее состояние
 
-Первый этап — отчётчик с ограничением памяти на базе `github.com/grokify/outlook-pst-go`:
+Текущий этап — отчётчик и экспортёр в Thunderbird с ограничением памяти на
+базе `github.com/grokify/outlook-pst-go`:
 
 ```text
 ostom [--json] [--memory-limit 256] file.ost
 ```
+
+## Сборка и запуск
+
+Установите Go 1.24 или новее и выполняйте команды из корня репозитория. При
+первой сборке Go автоматически скачает зависимости, перечисленные в `go.mod`:
+
+```powershell
+go build -o ostom.exe ./cmd/ostom
+go build -o ostom-fixture.exe ./cmd/ostom-fixture
+go test ./...
+go vet ./...
+```
+
+Запускайте инспекцию на копии исходного файла:
+
+```powershell
+.\ostom.exe --output-dir E:\recovered source-copy.ost
+```
+
+Экспорт читаемых индексированных писем в дерево, совместимое с Thunderbird:
+
+```powershell
+.\ostom.exe --export-dir E:\recovered source-copy.ost
+```
+
+В каталоге экспорта появится дерево `Local Folders` с mbox-файлами. Перед
+импортом закройте Thunderbird, скопируйте это дерево в каталог `Mail` нужного
+профиля Thunderbird и запустите программу — она перестроит индексы папок.
+Сохраните резервную копию экспорта, пока не проверите письма и вложения.
 
 Основные параметры:
 
@@ -104,7 +134,11 @@ ostom --output-dir E:\recovered file.ost
 ostom --recovery-scan --output-dir E:\recovered file.ost
 ```
 
-Используется отдельный recovery backend `go-pst`; отчёт показывает число проверенных, восстановленных, неудачных и orphan-узлов, а также категории ошибок. Запись результата пока не выполняется: это следующий этап.
+Используется отдельный recovery backend `go-pst`; отчёт показывает число
+проверенных, восстановленных, неудачных и orphan-узлов, а также категории
+ошибок. Если одновременно указан `--export-dir`, найденные recovery-элементы
+записываются отдельно в `Local Folders\OSTOM Recovered`; без `--export-dir`
+результат не записывается.
 
 В Windows парсер запускается внутри контролируемого worker-процесса. По
 умолчанию worker завершается после 10 минут без heartbeat от обработки
