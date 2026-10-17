@@ -33,7 +33,7 @@ At higher layers, folder hierarchy tables point to child folders and contents ta
 
 The header `bCryptMethod` describes the PFF block encoding: `0` (`None`), `1` (`Permute`), or `2` (`Cyclic`). These are reversible format encodings, not a password-encryption layer. OSTOM validates trailers against the on-disk bytes, then decodes external data blocks in memory before recognizing XBLOCK/heap payloads. Unknown methods are reported as unsupported rather than guessed.
 
-## Diagnostic interpretation
+## Reading diagnostic results
 
 - Header failure: the file may be truncated, not a PFF file, or have a damaged header.
 - Index access failure: NBT/BBT roots or referenced pages cannot be read.
@@ -41,11 +41,25 @@ The header `bCryptMethod` describes the PFF block encoding: `0` (`None`), `1` (`
 - Message failure: a folder is readable, but one or more message nodes or content rows fail.
 - Attachment failure: an attachment table, attachment node, or attachment data stream fails.
 
-OSTOM must report these levels separately. Opening the root does not prove that every message and attachment is intact.
+OSTOM should report these levels separately. Being able to open the root only
+shows that the first part of the store is readable; it does not confirm that
+all messages and attachments are intact.
 
-## What the current structural preflight proves
+## What the current structural scan checks
 
-The current Go implementation performs a bounded, read-only preflight before the high-level message walk. It reports the detected PFF variant, declared versus actual file size, header CRC where the layout is known, NBT/BBT root offsets, allocation-page checks, root-page type/shape, branch-page child-reference bounds, and a guarded traversal of root-connected NBT/BBT pages. For Unicode BBT leaves it also extracts `IB`/`CB` block references and checks their physical ranges, but it does not yet decode every block or decompress every 4 KiB data block. A CRC mismatch from a third-party corpus is therefore retained as evidence, but is not alone promoted to a definitive corruption verdict until the algorithm and page variant are independently confirmed.
+Before the message walk, the current Go implementation performs a bounded,
+read-only structural scan. It reports the detected PFF variant, declared and
+actual file size, header CRC where the layout is known, NBT/BBT root offsets,
+allocation-page checks, root-page type and shape, branch-page child-reference
+bounds, and a guarded walk through root-connected NBT/BBT pages. For Unicode
+BBT leaves it also extracts `IB`/`CB` block references and checks whether their
+physical ranges fit inside the file.
+
+This scan does not yet decode every block or decompress every 4 KiB data block.
+For that reason, a CRC mismatch from a third-party corpus is recorded as a
+warning for further investigation; by itself it is not treated as proof that
+the file is corrupt until the algorithm and page variant are independently
+confirmed.
 
 ## Important OST variant: 4 KiB pages and compressed blocks
 
@@ -72,4 +86,8 @@ Primary references: [MS-PST NDB layer](https://learn.microsoft.com/en-us/openspe
 
 The payload pre-scan currently reads unique NBT-referenced blocks under a hard limit, classifies their first byte as external data, extended block, or subnode block, performs bounded advisory trailer/signature/CRC checks, parses bounded XBLOCK/SLBLOCK headers, and follows newly discovered BIDs through a bounded work queue. It reports internal references, subnode entry counts, logical sizes, and unreadable discovered blocks, but does not yet assemble a complete logical stream or reconstruct message/attachment streams.
 
-Trailer checks are now reported as advisory diagnostics. The bundled corpus can be readable by the high-level parser while exposing zeroed or layout-incompatible trailer bytes at the BBT-derived location; this is evidence for further format investigation, not an automatic corruption verdict.
+Trailer checks are reported as warnings, not as a final verdict. The bundled
+corpus can be readable by the high-level parser even when the bytes found at a
+BBT-derived trailer location are zeroed or do not match the expected layout.
+That result calls for more format investigation; it does not automatically
+mean that the file is corrupt.
