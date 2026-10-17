@@ -41,4 +41,7 @@ jobs:
         run: go vet ./...
 
       - name: Build CLI binaries
-        run: go build ./cmd/ostom ./cmd/ostom-fixture
+        shell: pwsh
+        run: |
+          go build -o "$env:RUNNER_TEMP\ostom.exe" .\cmd\ostom
+          go build -o "$env:RUNNER_TEMP\ostom-fixture.exe" .\cmd\ostom-fixture
