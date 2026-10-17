@@ -159,6 +159,11 @@ go run ./cmd/ostom-fixture -kind pst -damage header-crc -out testdata\fixtures\s
 `ostom-fixture.exe` is a developer and test helper, not the recovery tool for
 your mailbox. Ordinary users only need `ostom.exe`.
 
+It exists because development and regression tests should not depend on a
+private, damaged customer mailbox. The generator provides a repeatable small
+fixture and controlled corruption cases so parser, export, progress, and
+recovery behavior can be tested without modifying a real OST.
+
 The generated OST is a parser-validated synthetic OST container, not a mailbox created by Outlook. With `-messages 50`, the generator selects the bundled Enron PST corpus, verifies that it contains at least 50 indexed messages, changes the PFF client magic, validates the result, and only then applies requested damage. The current source corpus contains 59 indexed messages and includes Sent folders; it is used only for local tests and is not committed.
 
 To export indexed readable messages directly into a Thunderbird-compatible `Local Folders` tree:
