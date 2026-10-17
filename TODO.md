@@ -102,6 +102,7 @@ The first priority is preserving local Sent, Drafts, Outbox, Conflicts, “This 
 ### M5 — Thunderbird export
 
 - [x] `mbox + .sbd` export preserving the indexed folder hierarchy.
+- [x] Emit an RFC 4155-compatible `ctime` mbox separator so strict Windows MBOX viewers can index messages.
 - [x] Preserve local-only messages that the high-level backend can read, including local Sent/Drafts candidates.
 - [ ] `.eml` per message fallback.
 - [ ] Safe folder names and conflict resolution.

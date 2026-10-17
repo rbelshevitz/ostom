@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	pst "github.com/useti/go-pst/v6/pkg"
 	"github.com/useti/go-pst/v6/pkg/properties"
@@ -22,6 +23,8 @@ type Report struct {
 	Directory         string          `json:"directory"`
 	RecoveryMode      bool            `json:"recovery_mode,omitempty"`
 	Folders           int             `json:"folders"`
+	FoldersWithMail   int             `json:"folders_with_mail"`
+	EmptyFolders      int             `json:"empty_folders"`
 	Messages          int             `json:"messages"`
 	MessagesAttempted int             `json:"messages_attempted"`
 	MessagesExpected  int             `json:"messages_expected,omitempty"`
@@ -227,6 +230,7 @@ func exportFolder(folder pst.Folder, root string, path []string, r *Report, hear
 	if err != nil {
 		return fmt.Errorf("read messages in %q: %w", strings.Join(path, "\\"), err)
 	}
+	attemptsBefore := r.MessagesAttempted
 	for iter.Next() {
 		callHeartbeat(heartbeat)
 		r.MessagesAttempted++
@@ -254,6 +258,11 @@ func exportFolder(folder pst.Folder, root string, path []string, r *Report, hear
 	}
 	if err := iter.Err(); err != nil {
 		r.Errors = append(r.Errors, fmt.Sprintf("message iterator in %q: %v", strings.Join(path, "\\"), err))
+	}
+	if r.MessagesAttempted == attemptsBefore {
+		r.EmptyFolders++
+	} else {
+		r.FoldersWithMail++
 	}
 	return nil
 }
@@ -289,12 +298,14 @@ func writeMessageWithSource(out io.Writer, message *pst.Message, r *Report, sour
 	if from == "" {
 		from = "unknown"
 	}
-	if _, err := fmt.Fprintf(out, "From %s\r\n", from); err != nil {
+	date := time.Unix(0, props.GetClientSubmitTime()).UTC()
+	if _, err := fmt.Fprintf(out, "From %s %s\r\n", from, date.Format("Mon Jan _2 15:04:05 2006")); err != nil {
 		return 0, false, subject, err
 	}
 	lw := newMboxLineWriter(out)
 	fmt.Fprintf(lw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", props.GetSubject()))
 	fmt.Fprintf(lw, "From: %s\r\n", from)
+	fmt.Fprintf(lw, "Date: %s\r\n", date.Format(time.RFC1123Z))
 	if props.GetDisplayTo() != "" {
 		fmt.Fprintf(lw, "To: %s\r\n", props.GetDisplayTo())
 	}

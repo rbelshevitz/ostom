@@ -57,7 +57,7 @@ func (w *Writer) Write(folderPath []string, subject, from, to, cc, messageID str
 	if date.IsZero() {
 		date = time.Unix(0, 0).UTC()
 	}
-	if _, err := fmt.Fprintf(f, "From %s %s\r\n", from, date.Format(time.RFC1123Z)); err != nil {
+	if _, err := fmt.Fprintf(f, "From %s %s\r\n", from, date.Format("Mon Jan _2 15:04:05 2006")); err != nil {
 		return err
 	}
 	fmt.Fprintf(&msg, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))

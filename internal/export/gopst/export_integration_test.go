@@ -38,7 +38,7 @@ func TestExportFixturePreservesHierarchy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(b), "From ") || !strings.Contains(string(b), "MIME-Version: 1.0") {
+	if !strings.HasPrefix(string(b), "From ") || !strings.Contains(string(b), "Date: ") || !strings.Contains(string(b), "MIME-Version: 1.0") {
 		t.Fatalf("exported mbox does not look like an RFC 5322 message: %q", string(b))
 	}
 }

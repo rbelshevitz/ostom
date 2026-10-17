@@ -155,7 +155,7 @@ This does not by itself mean that the file is malware. Verify the archive
 against the published `SHA256SUMS.txt` before running it; in PowerShell:
 
 ```powershell
-Get-FileHash .\ostom-v0.2.1-windows-amd64.zip -Algorithm SHA256
+Get-FileHash .\ostom-v0.2.2-windows-amd64.zip -Algorithm SHA256
 ```
 
 An administrator may sign a private/internal build with an organization-owned
@@ -248,6 +248,13 @@ ostom --export-dir E:\recovered file.ost
 ```
 
 Attachments are associated through the message attachment table and copied through `go-pst`'s streaming attachment writer. Inline attachments retain `Content-ID` when available. The exporter writes no `.msf` files.
+
+An empty mbox file is not automatically an export failure: OSTOM creates one
+for every readable source folder so Thunderbird can preserve the hierarchy.
+Empty source folders therefore remain zero bytes. Check the human summary or
+the JSON fields `folders_with_mail`, `empty_folders`, `messages`,
+`messages_attempted`, `skipped_messages`, and `errors` before deciding that an
+export failed.
 
 The export report includes complete aggregate counts for attempted, exported,
 partial, and skipped messages, plus attachment failures. JSON also contains a

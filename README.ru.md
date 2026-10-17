@@ -159,7 +159,7 @@ go vet ./...
 опубликованному `SHA256SUMS.txt`; в PowerShell:
 
 ```powershell
-Get-FileHash .\ostom-v0.2.1-windows-amd64.zip -Algorithm SHA256
+Get-FileHash .\ostom-v0.2.2-windows-amd64.zip -Algorithm SHA256
 ```
 
 Администратор может бесплатно подписать внутреннюю сборку собственным или
@@ -266,6 +266,12 @@ ostom --export-dir E:\recovered file.ost
 памяти.
 
 Вложения связываются через attachment table конкретного письма и копируются потоково через writer `go-pst`. Для inline-вложений сохраняется `Content-ID`, если он есть. Файлы `.msf` не создаются.
+
+Нулевой размер mbox-файла сам по себе не означает ошибку экспорта: OSTOM
+создаёт файл для каждой доступной исходной папки, чтобы сохранить иерархию для
+Thunderbird. Поэтому пустые папки закономерно остаются нулевого размера.
+Смотрите сводку или JSON-поля `folders_with_mail`, `empty_folders`, `messages`,
+`messages_attempted`, `skipped_messages` и `errors`.
 
 ### Отчёты, прогресс и ограничения
 
