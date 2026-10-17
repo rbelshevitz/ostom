@@ -93,6 +93,12 @@ These are focus and workflow advantages, not a claim that OSTOM currently
 decodes more PFF variants than mature projects such as libpff. Native property,
 table, and orphan-node salvage remains an active v0.2 milestone.
 
+Projects such as `libpff` have a different role: they are general-purpose,
+low-level PFF libraries and recovery references. OSTOM uses them as format and
+behavioral references, but focuses on a local-first, explainable recovery path
+for a person dealing with a damaged Outlook store. These projects should not
+be compared as if they had the same product goal.
+
 ### What can be recovered
 
 OSTOM preserves the folder hierarchy for readable indexed content and exports
