@@ -1,0 +1,35 @@
+# Go build and dependency caches created locally
+.gopath/
+.gomodcache/
+.gobuildcache/
+third_party/outlook-pst-go/sample.pst
+
+# Compiled binaries and coverage/profiling output
+ostom.exe
+ostom-fixture.exe
+ostom
+*.test
+*.prof
+coverage.out
+
+# Local recovery/export output; source OST files must never be committed
+*.ost
+*.pst
+*.bak
+*.bak.pst
+*.mbox
+*.eml
+*.msf
+thunderbird-output/
+recovered-output/
+reports/
+testdata/export-*/
+testdata/recovered-*/
+*.building.pst
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
