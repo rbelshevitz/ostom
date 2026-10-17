@@ -98,6 +98,24 @@ close the application, copy that `Local Folders` directory into the profile's
 Keep the generated export as a backup until the messages and attachments have
 been checked.
 
+### Windows signature and SmartScreen
+
+Release binaries are currently unsigned. Windows SmartScreen may therefore
+show an “unrecognized app” warning when `ostom.exe` is started after download.
+This does not by itself mean that the file is malware. Verify the archive
+against the published `SHA256SUMS.txt` before running it; in PowerShell:
+
+```powershell
+Get-FileHash .\ostom-v0.2.1-windows-amd64.zip -Algorithm SHA256
+```
+
+An administrator may sign a private/internal build with an organization-owned
+or self-signed Authenticode certificate and deploy that certificate to trusted
+computers. This is free for internal use, but it does not create public trust
+and may not remove SmartScreen warnings on unrelated computers. Public
+distribution normally requires a certificate or signing service from a trusted
+certificate authority. Never publish the private `.pfx` signing key.
+
 The main options are:
 
 - `--json` — machine-readable report.
