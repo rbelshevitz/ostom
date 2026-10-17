@@ -256,3 +256,24 @@ Build requires network access to download Go modules. Until dependencies are ava
 - [FORMAT](FORMAT.md) — PFF/OST/PST structure and diagnostic evidence.
 - [THUNDERBIRD](THUNDERBIRD.md) — importing `Local Folders` output.
 - [Third-party notices](THIRD_PARTY_NOTICES.md) — direct dependency licenses.
+
+## Disclaimer
+
+OSTOM is provided as an independent, best-effort recovery utility. Use it on
+a copy of the source OST/PST, not on the only original. No recovery result is
+guaranteed, and a report that opens successfully is not proof that every item
+is intact.
+
+The `ostom` CLI opens the source store read-only and does not upload its
+contents. During inspection it writes no recovery files. When an explicit
+`--export-dir` is supplied, it creates or appends Thunderbird-compatible files
+only under that directory. `--output-dir` may also create the explicitly named
+directory so its free space can be checked. The source store is never modified
+by the CLI. The separate `ostom-fixture` developer tool writes only to its
+explicit fixture path and may create a temporary sibling file while generating
+the fixture.
+
+OSTOM is not affiliated with or endorsed by Microsoft and is not a forensic
+tool. You are responsible for preserving the original, checking exported
+messages and attachments, and complying with applicable privacy and data-
+handling requirements.
