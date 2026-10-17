@@ -38,7 +38,7 @@ The first priority is preserving local Sent, Drafts, Outbox, Conflicts, “This 
 - [x] Keep recovery-backend panics inside the diagnostic report.
 - [x] Create the destination directory before checking free space.
 - [ ] Test against a real OST with local-only Sent/Drafts and attachments.
-- [ ] Replace or fix the current PST writer before generating exact deterministic 50-message/attachment fixtures; the current v0.1.0 writer fails while applying BBT changes. The present corpus fixture provides 59 real indexed messages for stress tests.
+- [ ] Add a deterministic attachment-bearing fixture path or fixture corpus; the current generator reuses a validated PST corpus and does not synthesize attachment records itself. The present corpus fixture provides 59 real indexed messages for stress tests.
 - [x] Report high-level folders, messages, unread messages, and attachments when the backend can enumerate them.
 - [ ] Make those counts complete under damaged tables through native payload recovery.
 - [ ] Stable exit codes for automation.
