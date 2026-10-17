@@ -23,6 +23,15 @@ Microsoft, Outlook, Windows, Microsoft 365, and related names are trademarks of
 the Microsoft group of companies. OSTOM is an independent project and is not
 affiliated with, sponsored, or approved by Microsoft.
 
+## Before you start
+
+Make a backup copy of the OST/PST file and run OSTOM against the copy. Keep the
+original unchanged. OSTOM opens the source read-only, but damaged data may be
+unreadable and recovery is not guaranteed. OSTOM is an independent,
+best-effort recovery utility, not a forensic tool.
+
+The project is deliberately not a forensic suite. It does not claim chain of custody, deleted-record recovery, password cracking, DPAPI/EFS/BitLocker decryption, or a guarantee that every damaged item can be reconstructed. The source store is opened read-only and all recovery results are best-effort.
+
 ## Quick start
 
 If you only need to rescue mail, you do not need to understand the file format
@@ -56,15 +65,6 @@ or build the source code. Download the latest [Windows amd64 release](https://gi
 4. Close Thunderbird, copy the generated `Local Folders` directory into the
    Thunderbird profile's `Mail` directory, and start Thunderbird. Check the
    recovered messages and attachments before deleting anything.
-
-### Before you start
-
-Make a backup copy of the OST/PST file and run OSTOM against the copy. Keep the
-original unchanged. OSTOM opens the source read-only, but damaged data may be
-unreadable and recovery is not guaranteed. OSTOM is an independent,
-best-effort recovery utility, not a forensic tool.
-
-The project is deliberately not a forensic suite. It does not claim chain of custody, deleted-record recovery, password cracking, DPAPI/EFS/BitLocker decryption, or a guarantee that every damaged item can be reconstructed. The source store is opened read-only and all recovery results are best-effort.
 
 ## What “encrypted OST” means here
 
