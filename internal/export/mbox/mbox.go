@@ -21,10 +21,10 @@ type Attachment struct {
 }
 
 type Writer struct {
-	Root                 string
+	Root                string
 	MaxAttachmentMemory int64
 	SkippedAttachments  int
-	Errors               []string
+	Errors              []string
 }
 
 func New(root string, maxAttachmentMemory int64) (*Writer, error) {

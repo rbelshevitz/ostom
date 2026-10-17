@@ -1,11 +1,15 @@
 # ostom
 
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
 
 > A mailbox archaeologist for OST/PST files, recovering readable mail and carrying it to your favorite mail app.
 
 `ostom` is a read-only Outlook OST/PST inspection and recovery tool written in Go.
 Its primary purpose is recovering mail that exists only in a local store, including local Sent, Drafts, Outbox, hidden and non-standard folders. Folder names are never used as proof that data is server-backed.
+
+Build requirement: Go 1.24 or newer. The CI matrix currently validates the
+Windows build with Go 1.24.x.
 
 OSTOM means **OST Mail Recovery**. The name describes the practical goal, not a forensic or cryptographic product claim: inspect a local Outlook store, recover readable items, preserve folder hierarchy, and export them for ordinary mail software such as Thunderbird.
 

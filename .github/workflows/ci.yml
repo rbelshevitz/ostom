@@ -24,8 +24,9 @@ jobs:
       - name: Check formatting
         shell: pwsh
         run: |
-          $files = Get-ChildItem -Recurse -File -Filter *.go |
-            Where-Object { $_.FullName -notmatch '\\(\.gopath|\.gomodcache|\.gobuildcache)\\' }
+          # Ask Git for tracked source files so repository/tool caches are
+          # never traversed and Windows path regexes are unnecessary.
+          $files = @(git ls-files -- '*.go')
           $unformatted = @($files | ForEach-Object { gofmt -l $_.FullName })
           if ($unformatted.Count -gt 0) {
             Write-Host "Unformatted Go files:"
