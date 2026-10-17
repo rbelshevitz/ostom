@@ -8,6 +8,11 @@ The primary recovery target is local-only content. OSTOM must inspect and export
 
 OST and PST use the Microsoft PFF/OFF family. The low-level NDB layer contains:
 
+- the NDB header and allocation metadata;
+- the NBT (Node B-tree), which maps node IDs to data/subnode BIDs;
+- the BBT (Block B-tree), which maps BIDs to physical block locations;
+- data and subnode blocks containing the payload referenced by those indexes.
+
 Primary references:
 
 - [Microsoft [MS-PST] specification](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst)
@@ -26,6 +31,11 @@ Header
 ```
 
 The NBT maps a node ID to data and subnode block IDs. The BBT maps block IDs to file offsets, stored byte counts, and reference counts. The roots of both trees are referenced from the file header.
+
+NBT and BBT are indexes inside the NDB layer, not the complete mailbox database
+and not the message contents themselves. The actual folder, message, property,
+table, and attachment structures begin in the payload of the referenced node
+blocks and are decoded by higher layers.
 
 At higher layers, folder hierarchy tables point to child folders and contents tables point to messages. Messages may contain attachment tables and attachment subnodes.
 

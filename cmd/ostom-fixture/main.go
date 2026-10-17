@@ -14,12 +14,13 @@ import (
 
 	outlookpst "github.com/grokify/outlook-pst-go"
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"ostom/internal/format"
 )
 
 func main() {
 	out := flag.String("out", "testdata/fixtures/sample.pst", "fixture path")
 	kind := flag.String("kind", "pst", "pst or ost")
-	damage := flag.String("damage", "", "none, header-crc, truncate, or btree-root")
+	damage := flag.String("damage", "", "none, header-crc, declared-size, truncate, btree-root, block-trailer, xblock-level, xblock-count, or subnode-entry")
 	source := flag.String("source", "", "known-good PST source; defaults to the dependency's sample.pst")
 	messages := flag.Int("messages", 0, "minimum indexed messages required in the source fixture")
 	flag.Parse()
@@ -173,6 +174,19 @@ func damageFile(filename, damage string) error {
 			return fmt.Errorf("file too short")
 		}
 		b[4] ^= 0xff
+	case "declared-size":
+		if len(b) < 524 || binary.LittleEndian.Uint16(b[10:12]) < 23 {
+			return fmt.Errorf("file is not a supported Unicode fixture")
+		}
+		declared := uint64(len(b) - 1)
+		binary.LittleEndian.PutUint64(b[184:192], declared)
+		// Keep this scenario isolated to the declared-size field by rebuilding
+		// the two Unicode header CRC values used by ReadHeader.
+		for i := 520; i < 524; i++ {
+			b[i] = 0
+		}
+		binary.LittleEndian.PutUint32(b[4:8], disk.ComputeCRC(b[8:524]))
+		binary.LittleEndian.PutUint32(b[520:524], disk.ComputeCRC(b[8:520]))
 	case "truncate":
 		if len(b) < 2 {
 			return fmt.Errorf("file too short")
@@ -187,10 +201,102 @@ func damageFile(filename, damage string) error {
 		for i := 216; i < 248; i++ {
 			b[i] = 0
 		}
+	case "block-trailer":
+		if err := damageFirstBlockTrailer(filename, b); err != nil {
+			return err
+		}
+	case "xblock-level":
+		if err := mutateFirstInternalPayload(filename, b, func(payload []byte) bool {
+			return len(payload) >= 8 && payload[0] == 0x01 && (payload[1] == 1 || payload[1] == 2)
+		}, func(payload []byte) error {
+			payload[1] = 3
+			return nil
+		}); err != nil {
+			return err
+		}
+	case "xblock-count":
+		if err := mutateFirstInternalPayload(filename, b, func(payload []byte) bool {
+			return len(payload) >= 8 && payload[0] == 0x01 && (payload[1] == 1 || payload[1] == 2)
+		}, func(payload []byte) error {
+			binary.LittleEndian.PutUint16(payload[2:4], 0xffff)
+			return nil
+		}); err != nil {
+			return err
+		}
+	case "subnode-entry":
+		if err := mutateFirstInternalPayload(filename, b, func(payload []byte) bool {
+			return len(payload) >= 32 && payload[0] == 0x02 && payload[1] == 0 && binary.LittleEndian.Uint16(payload[2:4]) > 0
+		}, func(payload []byte) error {
+			binary.LittleEndian.PutUint64(payload[16:24], 0)
+			return nil
+		}); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown damage %q", damage)
 	}
 	return os.WriteFile(filename, b, 0o644)
+}
+
+func damageFirstBlockTrailer(filename string, b []byte) error {
+	h := format.ReadHeader(filename)
+	locations, err := format.IndexedBlockLocations(filename, h, int64(len(b)), 100000, 64)
+	if err != nil {
+		return fmt.Errorf("locate BBT blocks: %w", err)
+	}
+	var selected format.IndexedBlockLocation
+	found := false
+	for _, location := range locations {
+		aligned := (uint64(location.Size) + 63) &^ 63
+		trailerCRC := location.Offset + aligned + 4
+		if location.Size == 0 || trailerCRC+4 > uint64(len(b)) {
+			continue
+		}
+		if !found || location.Offset < selected.Offset {
+			selected, found = location, true
+		}
+	}
+	if !found {
+		return fmt.Errorf("no valid indexed block trailer found")
+	}
+	aligned := (uint64(selected.Size) + 63) &^ 63
+	b[selected.Offset+aligned+4] ^= 0xff
+	return nil
+}
+
+func mutateFirstInternalPayload(filename string, b []byte, match func([]byte) bool, mutate func([]byte) error) error {
+	h := format.ReadHeader(filename)
+	locations, err := format.IndexedBlockLocations(filename, h, int64(len(b)), 100000, 64)
+	if err != nil {
+		return fmt.Errorf("locate BBT blocks: %w", err)
+	}
+	var selected format.IndexedBlockLocation
+	var selectedPayload []byte
+	found := false
+	for _, location := range locations {
+		if location.BID&0x2 == 0 || location.Size == 0 {
+			continue
+		}
+		end := location.Offset + uint64(location.Size)
+		if end < location.Offset || end > uint64(len(b)) {
+			continue
+		}
+		payload := disk.DecryptBlock(b[location.Offset:end], h.CryptMethod, location.BID)
+		if !match(payload) {
+			continue
+		}
+		if !found || location.Offset < selected.Offset {
+			selected, selectedPayload, found = location, payload, true
+		}
+	}
+	if !found {
+		return fmt.Errorf("no matching internal payload found")
+	}
+	if err := mutate(selectedPayload); err != nil {
+		return err
+	}
+	copy(b[selected.Offset:selected.Offset+uint64(selected.Size)], selectedPayload)
+	return nil
 }
 
 func valueOrNone(value string) string {

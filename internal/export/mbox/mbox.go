@@ -37,6 +37,12 @@ func New(root string, maxAttachmentMemory int64) (*Writer, error) {
 // Write appends one RFC 5322 message to the mbox represented by folderPath.
 // folderPath is a logical folder path such as []string{"Sent", "Old"}.
 func (w *Writer) Write(folderPath []string, subject, from, to, cc, messageID string, date time.Time, body string, attachments []Attachment) error {
+	return w.WriteWithSource(folderPath, subject, from, to, cc, messageID, date, body, attachments, "indexed")
+}
+
+// WriteWithSource appends a message and records which recovery path produced
+// it. Write keeps the historical indexed source marker for compatibility.
+func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, messageID string, date time.Time, body string, attachments []Attachment, source string) error {
 	if len(folderPath) == 0 {
 		return fmt.Errorf("empty folder path")
 	}
@@ -72,7 +78,10 @@ func (w *Writer) Write(folderPath []string, subject, from, to, cc, messageID str
 		fmt.Fprintf(&msg, "Message-ID: %s\r\n", messageID)
 	}
 	fmt.Fprintf(&msg, "Date: %s\r\n", date.Format(time.RFC1123Z))
-	fmt.Fprint(&msg, "X-Ostom-Source: indexed\r\nMIME-Version: 1.0\r\n")
+	if source == "" {
+		source = "indexed"
+	}
+	fmt.Fprintf(&msg, "X-Ostom-Source: %s\r\nMIME-Version: 1.0\r\n", source)
 
 	usable := make([]Attachment, 0, len(attachments))
 	for _, attachment := range attachments {

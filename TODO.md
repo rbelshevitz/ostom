@@ -126,6 +126,27 @@ still pending.
 
 The current task is therefore payload-to-message recovery; further format reconnaissance is supporting work, not the next milestone.
 
+## Progress checkpoint — native message collection
+
+The native read-only path now has a bounded vertical slice from indexed NBT
+data through HN, PC, and TC row decoding. It can resolve available property
+values, preserve NID/BID provenance, and collect conservative recovered-message
+candidates with subject, message class, sender, date, bounded body bytes, and
+error status. Basic attachment metadata and readable subnode payloads can also
+reach the native mbox bridge. This is not yet full message recovery:
+intermediate BTH levels, subnode-backed row matrices, complete MAPI value
+decoding, arbitrary attachment streams, and production-grade native salvage
+remain pending.
+
+The first native export bridge now writes `RecoveredMessage` candidates to a
+separate `OSTOM Native Recovered` mbox tree and marks them with a native source
+header. `--recovery-scan` runs the existing go-pst probe and the bounded native
+collector in one deep-recovery pass; native results are included in JSON and
+the human-readable summary. Native collection now carries basic body/date and
+attachment metadata/payloads into MIME export. The next work is resolving
+attachment subnodes and retaining per-attachment status details in the final
+log.
+
 ## Definition of done
 
 A usable version must, against a copy of a real OST:

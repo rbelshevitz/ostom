@@ -172,7 +172,8 @@ The main options are:
 - `--json` — machine-readable report.
 - `--output-dir DIR` — volume to check for required free space.
 - `--export-dir DIR` — export indexed readable mail into a Thunderbird `Local Folders` tree.
-- `--recovery-scan` — explicitly run the slower best-effort recovery probe.
+- `--recovery-scan` — explicitly run the slower deep recovery pass: the
+  existing best-effort probe plus OSTOM's bounded native collector.
 - `--memory-limit MB` — soft process memory limit; default `256`, `0` disables it.
 - `--idle-timeout DUR` — worker idle timeout; default `10m`, `0` disables it.
 
@@ -189,6 +190,11 @@ The same command also writes messages found by the all-node recovery iterator
 to `Local Folders\OSTOM Recovered`. This is deliberately a separate mbox:
 recovered items may lack a reliable original folder and may duplicate an
 indexed export. Their source node is recorded in `X-Ostom-Source`.
+
+Native candidates collected from indexed NBT/PC structures are written to a
+separate `Local Folders\OSTOM Native Recovered` folder and marked with
+`X-Ostom-Source: native-recovered`. The JSON and human-readable report keep
+native collection and export counts separate from the external recovery probe.
 
 Use `--output-dir` during inspection to check the destination volume before recovery:
 
@@ -238,6 +244,19 @@ fixture and controlled corruption cases so parser, export, progress, and
 recovery behavior can be tested without modifying a real OST.
 
 The generated OST is a parser-validated synthetic OST container, not a mailbox created by Outlook. With `-messages 50`, the generator selects the bundled Enron PST corpus, verifies that it contains at least 50 indexed messages, changes the PFF client magic, validates the result, and only then applies requested damage. The current source corpus contains 59 indexed messages and includes Sent folders. Its messages and addresses may be real historical data rather than invented identities, so the corpus and generated fixtures are for local testing only: they are not committed or included in releases. Check the upstream corpus terms before redistributing any copy.
+
+#### Corpus inventory used by tests
+
+- `github.com/useti/go-pst/v6` `data/support.pst` (local Go module cache): the
+  current indexed PST corpus for NBT/BBT, payload, subnode, native collector,
+  export, and progress smoke tests. It contains 59 indexed messages and
+  Sent-folder data; it is not a genuine Outlook OST and is not committed.
+- `testdata/fixtures/*.pst` and `*.ost`: deterministic local derivatives made
+  by `ostom-fixture`, including header, truncation, trailer, B-tree, XBLOCK,
+  and subnode damage cases where the source corpus contains the structure.
+- Real Outlook OST samples with local-only folders, attachments, 4 KiB pages,
+  and compressed blocks: not yet present; they remain required validation
+  inputs before claiming production-grade OST salvage.
 
 ### Thunderbird export
 
