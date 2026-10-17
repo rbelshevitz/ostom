@@ -116,6 +116,8 @@ and may not remove SmartScreen warnings on unrelated computers. Public
 distribution normally requires a certificate or signing service from a trusted
 certificate authority. Never publish the private `.pfx` signing key.
 
+### Command-line options
+
 The main options are:
 
 - `--json` — machine-readable report.
@@ -124,6 +126,8 @@ The main options are:
 - `--recovery-scan` — explicitly run the slower best-effort recovery probe.
 - `--memory-limit MB` — soft process memory limit; default `256`, `0` disables it.
 - `--idle-timeout DUR` — worker idle timeout; default `10m`, `0` disables it.
+
+### Inspection and recovery
 
 The report can recommend or require an extended recovery scan; `--recovery-scan` remains explicit because it may take a long time on a large OST.
 
@@ -166,6 +170,8 @@ This is an idle timeout, not a total runtime limit. A timeout never modifies the
 source file and returns `TIMEOUT` instead of presenting partial JSON as a
 successful report.
 
+### Test fixture generator
+
 For a small local parser fixture:
 
 ```text
@@ -184,6 +190,8 @@ recovery behavior can be tested without modifying a real OST.
 
 The generated OST is a parser-validated synthetic OST container, not a mailbox created by Outlook. With `-messages 50`, the generator selects the bundled Enron PST corpus, verifies that it contains at least 50 indexed messages, changes the PFF client magic, validates the result, and only then applies requested damage. The current source corpus contains 59 indexed messages and includes Sent folders; it is used only for local tests and is not committed.
 
+### Thunderbird export
+
 To export indexed readable messages directly into a Thunderbird-compatible `Local Folders` tree:
 
 ```text
@@ -197,6 +205,8 @@ partial, and skipped messages, plus attachment failures. JSON also contains a
 bounded sample of per-message statuses with the source folder and subject;
 large stores report how many status records were omitted instead of retaining
 an unbounded in-memory list.
+
+### Reports, progress, and limits
 
 It reports file/header recognition, parser/index access, folder and message counts, unread count, attachment count, declared attachment bytes, and errors encountered while walking the physical tree.
 
