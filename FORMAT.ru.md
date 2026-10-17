@@ -12,6 +12,7 @@ OST и PST относятся к семейству Microsoft PFF/OFF. Нижн�
 
 - [Официальная спецификация Microsoft [MS-PST]](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst)
 - [Структура NDB](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/e4efaad0-1876-446e-9d34-bb921588f924)
+- [Обзор OST на FileFormat.com](https://docs.fileformat.com/email/ost/) (вторичный обзор; байтовые утверждения нужно сверять с официальной спецификацией MS-PST)
 - [Индексированный reader outlook-pst-go](https://github.com/grokify/outlook-pst-go)
 - [Recovery reader go-pst](https://github.com/useti/go-pst)
 - [Заметки libpff о формате PFF/OFF](https://github.com/libyal/libpff/blob/main/documentation/Personal%20Folder%20File%20(PFF)%20format.asciidoc)
