@@ -9,6 +9,16 @@ Its primary purpose is recovering mail that exists only in a local store, includ
 
 OSTOM means **OST Mail Recovery**. The name describes the practical goal, not a forensic or cryptographic product claim: inspect a local Outlook store, recover readable items, preserve folder hierarchy, and export them for ordinary mail software such as Thunderbird.
 
+OSTOM targets data files produced by **classic Outlook for Windows**, including
+files associated with Outlook 2016, Outlook 2019, Outlook 2021, Outlook 2024,
+and Outlook for Microsoft 365. This is a compatibility target, not a promise
+that every release, account type, file variant, or damaged file will be fully
+readable.
+
+Microsoft, Outlook, Windows, Microsoft 365, and related names are trademarks of
+the Microsoft group of companies. OSTOM is an independent project and is not
+affiliated with, sponsored, or approved by Microsoft.
+
 The project is deliberately not a forensic suite. It does not claim chain of custody, deleted-record recovery, password cracking, DPAPI/EFS/BitLocker decryption, or a guarantee that every damaged item can be reconstructed. The source store is opened read-only and all recovery results are best-effort.
 
 ### What “encrypted OST” means here
