@@ -15,6 +15,29 @@ The project is deliberately not a forensic suite. It does not claim chain of cus
 
 The PFF header has a `bCryptMethod` field. In the common OST/PST format this is normally `None`, `Permute`, or `Cyclic`: reversible block encoding used by the file format, not a user password and not modern disk encryption. OSTOM decodes these block bytes in memory because otherwise a valid external data block can be mistaken for an unknown payload. It never writes a decrypted copy of the source and does not attempt to defeat account, EFS, BitLocker, or other access controls. Unsupported or unknown methods are reported rather than silently guessed.
 
+## What OSTOM focuses on
+
+OSTOM is not presented as a universal replacement for every PFF reader or
+forensic recovery suite. Its practical difference is the recovery workflow:
+
+- **Local-first:** physically present Sent, Drafts, Outbox, hidden, custom, and
+  “This computer only” folders are treated as worth recovering.
+- **Inspect before extracting:** header, allocation, NBT/BBT, folder, message,
+  payload, and attachment evidence are reported separately.
+- **Honest resource planning:** export space is estimated before a long export,
+  with a clear insufficient-space result.
+- **Partial results are first-class:** one bad node, message, or attachment does
+  not discard the readable remainder; indexed and recovery-found items are kept
+  separate.
+- **Operationally useful on Windows:** bounded memory, honest `N/M` progress,
+  idle watchdogs, JSON output, and a Thunderbird-ready folder tree are built in.
+- **Explainable escalation:** extended recovery is recommended only with explicit
+  evidence, not because of one advisory CRC mismatch.
+
+These are focus and workflow advantages, not a claim that OSTOM currently
+decodes more PFF variants than mature projects such as libpff. Native property,
+table, and orphan-node salvage remains an active v0.2 milestone.
+
 ## Current status
 
 The first milestone implements a bounded-memory inspection CLI on top of `github.com/grokify/outlook-pst-go`:
