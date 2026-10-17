@@ -19,6 +19,14 @@ Microsoft, Outlook, Windows, Microsoft 365, and related names are trademarks of
 the Microsoft group of companies. OSTOM is an independent project and is not
 affiliated with, sponsored, or approved by Microsoft.
 
+### Before you start
+
+Work on a **verified copy** of the OST/PST file. Keep the original file
+unchanged and backed up. OSTOM opens the source read-only, but no recovery tool
+can guarantee success on a damaged file; users remain responsible for their
+files, backups, and recovery decisions. OSTOM is not a forensic tool and its
+results are best-effort.
+
 The project is deliberately not a forensic suite. It does not claim chain of custody, deleted-record recovery, password cracking, DPAPI/EFS/BitLocker decryption, or a guarantee that every damaged item can be reconstructed. The source store is opened read-only and all recovery results are best-effort.
 
 ### What “encrypted OST” means here
