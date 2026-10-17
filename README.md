@@ -23,6 +23,40 @@ Microsoft, Outlook, Windows, Microsoft 365, and related names are trademarks of
 the Microsoft group of companies. OSTOM is an independent project and is not
 affiliated with, sponsored, or approved by Microsoft.
 
+## Quick start
+
+If you only need to rescue mail, you do not need to understand the file format
+or build the source code. Download the latest [Windows amd64 release](https://github.com/rbelshevitz/ostom/releases), close Outlook, and make a copy of the OST/PST file.
+
+1. Inspect the copy and check the destination disk:
+
+   ```powershell
+   .\ostom.exe --output-dir E:\recovered source-copy.ost
+   ```
+
+2. Read the result in the console. If it says that an extended recovery scan
+   is recommended or required, run:
+
+   ```powershell
+   .\ostom.exe --recovery-scan --output-dir E:\recovered source-copy.ost
+   ```
+
+3. Export readable mail to Thunderbird:
+
+   ```powershell
+   .\ostom.exe --export-dir E:\recovered source-copy.ost
+   ```
+
+   If you also want the extended recovery output, combine both options:
+
+   ```powershell
+   .\ostom.exe --recovery-scan --export-dir E:\recovered source-copy.ost
+   ```
+
+4. Close Thunderbird, copy the generated `Local Folders` directory into the
+   Thunderbird profile's `Mail` directory, and start Thunderbird. Check the
+   recovered messages and attachments before deleting anything.
+
 ### Before you start
 
 Make a backup copy of the OST/PST file and run OSTOM against the copy. Keep the
@@ -32,11 +66,11 @@ best-effort recovery utility, not a forensic tool.
 
 The project is deliberately not a forensic suite. It does not claim chain of custody, deleted-record recovery, password cracking, DPAPI/EFS/BitLocker decryption, or a guarantee that every damaged item can be reconstructed. The source store is opened read-only and all recovery results are best-effort.
 
-### What “encrypted OST” means here
+## What “encrypted OST” means here
 
 The PFF header has a `bCryptMethod` field. In the common OST/PST format this is normally `None`, `Permute`, or `Cyclic`: reversible block encoding used by the file format, not a user password and not modern disk encryption. OSTOM decodes these block bytes in memory because otherwise a valid external data block can be mistaken for an unknown payload. It never writes a decrypted copy of the source and does not attempt to defeat account, EFS, BitLocker, or other access controls. Unsupported or unknown methods are reported rather than silently guessed.
 
-## What OSTOM focuses on
+## What OSTOM does
 
 OSTOM is not presented as a universal replacement for every PFF reader or
 forensic recovery suite. Its practical difference is the recovery workflow:
