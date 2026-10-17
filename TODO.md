@@ -88,9 +88,9 @@ The first priority is preserving local Sent, Drafts, Outbox, Conflicts, “This 
 - [x] Estimate disk space required for export and check target free space before export.
 - [ ] Mark server-backed versus local-candidate folders without assuming that the server copy is complete.
 - [x] Report elapsed time, throughput, and progress checkpoint; remaining total is marked as declared evidence when available.
-- [ ] Define a parser backend interface before locking in a library.
+- [x] Define a parser backend interface so the high-level CLI is not locked to one reader.
 - [ ] Add an optional libpff-backed recovery probe/export path after LGPL integration review; use it as an oracle, not as copied code.
-- [ ] Add a true streaming attachment reader; do not use whole-payload `[]byte` APIs for large exports.
+- [x] Use the backend's streaming attachment writer; do not materialize the whole attachment payload for large exports.
 
 ### M4 — Recovery
 
