@@ -105,10 +105,12 @@ attachment bytes into MIME output. The bounded native path can also associate
 explicit attachment subnodes with a recovered message and preserves filename,
 declared/readable size, `Content-ID`, and the regular/inline/embedded/external
 role when those properties are readable. Native attachment payloads are still
-memory-bounded (32 MiB by the CLI default), and arbitrary attachment-stream
-trees, complete attachment-table recovery, and 4 KiB payload variants are not
-yet supported. A native attachment marked `partial` or `unavailable` is not a
-claim that the original file is absent.
+memory-bounded (32 MiB by the CLI default). Indexed reading now handles the
+4 KiB B-tree pages and compressed blocks exercised by the Outlook 2013 smoke
+sample. This does not yet establish 4 KiB attachment-stream support: arbitrary
+native attachment-stream trees and complete recovery of damaged attachment
+tables remain unsupported. A native attachment marked `partial` or
+`unavailable` is not a claim that the original file is absent.
 
 ### Attachment recovery: guarantees, limits, and research
 
@@ -129,9 +131,9 @@ read a payload; it is not proof that the payload never existed. Native
 candidate attachments can be incomplete or duplicated.
 
 **Still under investigation.** Arbitrary attachment-stream trees (including
-XBLOCK/XXBLOCK/SLBLOCK and 4 KiB variants), complete recovery of damaged
-attachment tables, embedded-message extraction as a separate `.eml`, and
-semantics of external references require real Outlook samples and dedicated
+SLBLOCK and 4 KiB attachment variants), complete recovery of damaged attachment
+tables, embedded-message extraction as a separate `.eml`, and semantics of
+external references require attachment-bearing Outlook samples and dedicated
 fixtures before support can be claimed. The current native attachment path is
 a bounded salvage aid, not a replacement for a complete PFF attachment reader.
 
@@ -271,9 +273,11 @@ The generated OST is a parser-validated synthetic OST container, not a mailbox c
 - `testdata/fixtures/*.pst` and `*.ost`: deterministic local derivatives made
   by `ostom-fixture`, including header, truncation, trailer, B-tree, XBLOCK,
   and subnode damage cases where the source corpus contains the structure.
-- Real Outlook OST samples with local-only folders, attachments, 4 KiB pages,
-  and compressed blocks: not yet present; they remain required validation
-  inputs before claiming production-grade OST salvage.
+- A real Outlook 2013 4 KiB OST smoke sample is exercised locally (not
+  committed): indexed export reads its 4 KiB pages/compressed blocks and
+  exports all 3 indexed messages. It contains no attachments, so it does not
+  validate attachment recovery. Real OST samples with local-only folders and
+  attachments remain required before claiming production-grade OST salvage.
 
 ### Thunderbird export
 

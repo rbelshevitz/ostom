@@ -9,6 +9,8 @@ require (
 	golang.org/x/sys v0.34.0
 )
 
+replace github.com/useti/go-pst/v6 => ./third_party/go-pst
+
 require (
 	github.com/emersion/go-message v0.17.0 // indirect
 	github.com/emersion/go-textwrapper v0.0.0-20200911093747-65d896831594 // indirect

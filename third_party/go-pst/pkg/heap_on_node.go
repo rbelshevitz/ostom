@@ -1,0 +1,273 @@
+// go-pst is a library for reading Personal Storage Table (.pst) files (written in Go/Golang).
+//
+// Copyright 2023 Marten Mooij
+// Copyright 2025 Yury Tikhoglaz
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package pst
+
+import (
+	"bytes"
+	"encoding/binary"
+	"io"
+
+	"github.com/rotisserie/eris"
+)
+
+// HeapOnNode represents a Heap-on-Node.
+type HeapOnNode struct {
+	Reader *HeapOnNodeReader
+}
+
+// IsValidSignature returns true if the signature of the block matches 0xEC (236).
+// References "Heap-on-Node header".
+func (heapOnNode *HeapOnNode) IsValidSignature() (bool, error) {
+	signature := make([]byte, 1)
+
+	if _, err := heapOnNode.Reader.ReadAt(signature, 2); err != nil {
+		return false, eris.Wrap(err, "failed to read signature")
+	}
+
+	return signature[0] == 236, nil
+}
+
+// GetTableType returns the table type.
+// References "Heap-on-Node header", "Table types".
+func (heapOnNode *HeapOnNode) GetTableType() (uint8, error) {
+	tableType := make([]byte, 1)
+
+	if _, err := heapOnNode.Reader.ReadAt(tableType, 3); err != nil {
+		return 0, eris.Wrap(err, "failed to read table type")
+	}
+
+	return tableType[0], nil
+}
+
+// GetHIDUserRoot returns the HID user root.
+// References "Heap-on-Node header".
+func (heapOnNode *HeapOnNode) GetHIDUserRoot() (Identifier, error) {
+	hidUserRoot := make([]byte, 4)
+
+	if _, err := heapOnNode.Reader.ReadAt(hidUserRoot, 4); err != nil {
+		return 0, eris.Wrap(err, "failed to read HID user root")
+	}
+
+	return Identifier(binary.LittleEndian.Uint32(hidUserRoot)), nil
+}
+
+// GetHeapOnNode returns the Heap-on-Node of the b-tree node.
+func (file *File) GetHeapOnNode(btreeNode BTreeNode) (*HeapOnNode, error) {
+	// Internal identifiers have blocks (XBlock or XXBlock).
+	// This is a list of block identifiers that point to block b-tree entries (where the data is).
+	isInternal := btreeNode.Identifier&0x02 != 0
+
+	if isInternal {
+		var blocks []BTreeNode
+		var blocksTotalSize uint32
+		var err error
+		if file.FormatType == FormatTypeUnicode4k {
+			blocks, blocksTotalSize, err = file.getBlocksFromNode(btreeNode)
+		} else {
+			blocks, err = file.GetBlocks(btreeNode.FileOffset)
+			if err == nil {
+				blocksTotalSize, err = file.GetBlocksTotalSize(btreeNode.FileOffset)
+			}
+		}
+		if err != nil {
+			return nil, eris.Wrap(err, "failed to get blocks")
+		}
+
+		blockReaders := make([]io.SectionReader, len(blocks))
+		blockIdentifiers := make([]Identifier, len(blocks))
+		blockReaderTotalSize := 0
+
+		for i, block := range blocks {
+			if file.FormatType == FormatTypeUnicode4k {
+				data, err := file.readBTreeBlockData(block)
+				if err != nil {
+					return nil, eris.Wrap(err, "failed to read data block")
+				}
+				blockReaderTotalSize += len(data)
+				blockReaders[i] = *io.NewSectionReader(bytes.NewReader(data), 0, int64(len(data)))
+			} else {
+				blockReaderTotalSize += int(block.Size)
+				blockReaders[i] = *NewBTreeNodeReader(block, file.Reader)
+			}
+			blockIdentifiers[i] = block.Identifier
+		}
+
+		if blocksTotalSize != uint32(blockReaderTotalSize) {
+			return nil, ErrTotalBlocksSizeMismatch
+		}
+
+		return &HeapOnNode{Reader: NewHeapOnNodeReaderWithIdentifiers(file.EncryptionType, blockIdentifiers, blockReaders...)}, nil
+	}
+
+	if file.FormatType == FormatTypeUnicode4k {
+		data, err := file.readBTreeBlockData(btreeNode)
+		if err != nil {
+			return nil, eris.Wrap(err, "failed to read data block")
+		}
+		block := *io.NewSectionReader(bytes.NewReader(data), 0, int64(len(data)))
+		return &HeapOnNode{Reader: NewHeapOnNodeReaderWithIdentifiers(file.EncryptionType, []Identifier{btreeNode.Identifier}, block)}, nil
+	}
+
+	// For single block, pass the btreeNode identifier for cyclic encryption
+	return &HeapOnNode{Reader: NewHeapOnNodeReaderWithIdentifiers(file.EncryptionType, []Identifier{btreeNode.Identifier}, *io.NewSectionReader(file.Reader, btreeNode.FileOffset, int64(btreeNode.Size)))}, nil
+}
+
+// GetHeapOnNodeReaderFromHNIDWithOrigin attempts an origin-aware HNID resolution.
+// It uses explicitly provided local descriptors first, then neighbor-based inference
+// when RecoveryMode is enabled, and falls back to the standard HNID/HID path.
+func (file *File) GetHeapOnNodeReaderFromHNIDWithOrigin(hnid Identifier, heapOnNodeReader HeapOnNodeReader, origin *Identifier, localDescriptors ...LocalDescriptor) (*HeapOnNodeReader, error) {
+	// First, respect explicitly provided local descriptors.
+	if len(localDescriptors) > 0 {
+		localDescriptor, err := FindLocalDescriptor(hnid, localDescriptors)
+
+		if err == nil {
+			localDescriptorHeapOnNode, err := file.GetHeapOnNodeFromLocalDescriptor(localDescriptor)
+
+			if err != nil {
+				return nil, eris.Wrap(err, "failed to get Heap-on-Node from local descriptor")
+			}
+
+			return localDescriptorHeapOnNode.Reader, nil
+		}
+	}
+
+	// If an origin is provided and recovery mode is enabled, attempt a localized search first.
+	if origin != nil && file.RecoveryMode {
+		if ld, err := file.FindLocalDescriptorNearby(hnid, *origin, 3); err == nil {
+			if heapOnNode, err := file.GetHeapOnNodeFromLocalDescriptor(ld); err == nil {
+				return heapOnNode.Reader, nil
+			}
+		}
+	}
+
+	// Fallback to existing behavior including global search / block lookup built into the HID path.
+	return file.GetHeapOnNodeReaderFromHNID(hnid, heapOnNodeReader, localDescriptors...)
+}
+
+// GetHeapOnNodeReaderFromHNID returns the Heap-on-Node reader from the specified HNID (heap or node identifier).
+// Note this doesn't keep track of all the passed HeapOnNodeReader blocks.
+func (file *File) GetHeapOnNodeReaderFromHNID(hnid Identifier, heapOnNodeReader HeapOnNodeReader, localDescriptors ...LocalDescriptor) (*HeapOnNodeReader, error) {
+	if len(localDescriptors) > 0 {
+		localDescriptor, err := FindLocalDescriptor(hnid, localDescriptors)
+
+		if err == nil {
+			localDescriptorHeapOnNode, err := file.GetHeapOnNodeFromLocalDescriptor(localDescriptor)
+
+			if err != nil {
+				return nil, eris.Wrap(err, "failed to get Heap-on-Node from local descriptor")
+			}
+
+			return localDescriptorHeapOnNode.Reader, nil
+		}
+	}
+
+	return file.GetHeapOnNodeReaderFromHID(hnid, heapOnNodeReader)
+}
+
+// GetHeapOnNodeReaderFromHID returns the Heap-on-Node reader from the heap ID.
+func (file *File) GetHeapOnNodeReaderFromHID(hid Identifier, heapOnNodeReader HeapOnNodeReader) (*HeapOnNodeReader, error) {
+	if hid.GetType() != IdentifierTypeHID {
+		// The data is in the local descriptors (when the HNID matches a local descriptor identifier).
+		// This gives us a data identifier that points to a node in the block b-tree (another Heap-on-Node).
+		// Maybe there were no local descriptors specified in GetHeapOnNodeReaderFromHNID?
+
+		// In recovery mode, try to look up the HNID directly in the Block B-tree
+		if file.RecoveryMode {
+			// Try to interpret the HNID as a block identifier and look it up
+			if blockNode, err := file.GetBlockBTreeNode(hid); err == nil {
+				if heapOnNode, err := file.GetHeapOnNode(blockNode); err == nil {
+					return heapOnNode.Reader, nil
+				}
+			}
+
+			// If that failed, attempt to find a local descriptor anywhere in the file
+			// that references this HNID and use its DataIdentifier to build the HeapOnNode.
+			if localDesc, err := file.FindLocalDescriptorGlobally(hid); err == nil {
+				if heapOnNode, err := file.GetHeapOnNodeFromLocalDescriptor(localDesc); err == nil {
+					return heapOnNode.Reader, nil
+				}
+			}
+
+			// As a last-ditch recovery heuristic, scan block payloads for LocalDescriptor
+			// raw entries that reference this HNID. This can recover descriptors that are
+			// present as data within other blocks but are not referenced via the node b-tree.
+			if localDesc, err := file.FindLocalDescriptorInBlocks(hid); err == nil {
+				if heapOnNode, err := file.GetHeapOnNodeFromLocalDescriptor(localDesc); err == nil {
+					return heapOnNode.Reader, nil
+				}
+			}
+		}
+
+		return nil, ErrHeapOnNodeExternalNode
+	}
+
+	blockIndex := int(hid) >> 16
+	blockOffset := int64(0)
+
+	if blockIndex > 0 {
+		if blockIndex > len(heapOnNodeReader.Blocks) {
+			return nil, ErrBlockIndexNotFound
+		}
+
+		blockOffset = heapOnNodeReader.BlockOffsets[blockIndex]
+	}
+
+	pageMapOffset := make([]byte, 2)
+
+	if _, err := heapOnNodeReader.ReadAt(pageMapOffset, blockOffset); err != nil {
+		return nil, eris.Wrap(err, "failed to read page map offset")
+	}
+
+	allocationIndex := int64((hid & 0xFFFF) >> 5)
+	allocationOffset := (blockOffset + int64(binary.LittleEndian.Uint16(pageMapOffset))) + (2 * allocationIndex) + 2
+
+	startOffset := make([]byte, 2)
+
+	if _, err := heapOnNodeReader.ReadAt(startOffset, allocationOffset); err != nil {
+		return nil, eris.Wrap(err, "failed to read start offset")
+	}
+
+	endOffset := make([]byte, 2)
+
+	if _, err := heapOnNodeReader.ReadAt(endOffset, allocationOffset+2); err != nil {
+		return nil, eris.Wrap(err, "failed to read end offset")
+	}
+
+	// Note that the block start offset is only for this singular block, not across all blocks.
+	blockStartOffset := int64(binary.LittleEndian.Uint16(startOffset))
+	blockEndOffset := int64(binary.LittleEndian.Uint16(endOffset))
+
+	// Get the block identifier for cyclic encryption
+	var blockIdentifier Identifier
+	if heapOnNodeReader.BlockIdentifiers != nil && blockIndex < len(heapOnNodeReader.BlockIdentifiers) {
+		blockIdentifier = heapOnNodeReader.BlockIdentifiers[blockIndex]
+	}
+
+	return NewHeapOnNodeReaderWithIdentifiers(file.EncryptionType, []Identifier{blockIdentifier}, *io.NewSectionReader(&heapOnNodeReader.Blocks[blockIndex], blockStartOffset, blockEndOffset-blockStartOffset)), nil
+}
+
+// GetHeapOnNodeFromLocalDescriptor creates a Heap-on-Node from the local descriptor.
+func (file *File) GetHeapOnNodeFromLocalDescriptor(localDescriptor LocalDescriptor) (*HeapOnNode, error) {
+	localDescriptorDataNode, err := file.GetBlockBTreeNode(localDescriptor.DataIdentifier)
+
+	if err != nil {
+		return nil, eris.Wrap(err, "failed to get block b-tree node")
+	}
+
+	return file.GetHeapOnNode(localDescriptorDataNode)
+}

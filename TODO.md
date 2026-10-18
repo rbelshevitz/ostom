@@ -16,6 +16,8 @@ source file.
 - Indexed Thunderbird `mbox + .sbd` export, plus a separate native-recovery
   mbox and `.eml` files. Individual message or attachment failures do not stop
   the export.
+- Indexed parsing of 4 KiB B-tree pages and compressed blocks, smoke-tested
+  against a real Outlook 2013 OST with 3 indexed messages (no attachments).
 - JSON reporting, space checks, progress/idle-timeout controls, and provenance
   for native candidates.
 
@@ -49,8 +51,8 @@ reliable original folder path.
 
 ## Next — recover more without losing bounds
 
-- [ ] Complete bounded streaming of XBLOCK/XXBLOCK and SLBLOCK payload trees,
-  including 4 KiB variants.
+- [ ] Complete bounded streaming of arbitrary native XBLOCK/XXBLOCK and
+  SLBLOCK attachment payload trees, including 4 KiB variants.
 - [ ] Extend native attachment streaming to XBLOCK/XXBLOCK/SLBLOCK and 4 KiB
   payload variants after the common attachment stream path is validated.
 - [ ] Add a salvage path for missing/damaged indexes, keeping its output
@@ -64,9 +66,11 @@ reliable original folder path.
   cases for truncation, roots, allocation maps, subnodes, and payloads.
 - [ ] Test a genuine Outlook OST containing local-only Sent/Drafts and
   attachments.
-- [ ] Validate 4 KiB compressed payload trees and encryption semantics on real
-  samples. The opt-in freepst smoke covers index traversal only, not XBLOCK
-  trees or attachments.
+- [x] Smoke-test indexed 4 KiB page/block parsing on a genuine Outlook 2013
+  OST: 3 of 3 indexed messages exported; the sample has no attachments.
+- [ ] Validate 4 KiB attachment payload trees and encryption semantics on
+  attachment-bearing real samples. The current smoke does not cover attachments
+  or native attachment-tree recovery.
 
 ## Later, only if it strengthens the workflow
 
