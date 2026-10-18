@@ -83,7 +83,8 @@ results are kept separate because their metadata or original folder path may
 be incomplete, and some may duplicate indexed items.
 
 Indexed mail and readable attachments are exported in the usual folder
-hierarchy. A public 4 KiB OST smoke test exported 12 messages and 4 attachments
+hierarchy. A public 4 KiB OST smoke test now yields 13 bounded native message
+candidates; complete attachment export remains unproven
 without failures. Extended recovery can find additional candidates, but complex
 attachment layouts are still being explored.
 

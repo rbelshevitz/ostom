@@ -9,16 +9,19 @@ source file.
 
 - Safe header/index diagnostics for Unicode and detected 4 KiB layouts.
 - Guarded native traversal from NBT/BBT blocks through bounded HN/PC/TC
-  decoding, including conservative message and attachment candidates.
+  decoding, with conservative message/attachment candidate plumbing. The
+  real 4 KiB attachment-bearing sample currently yields 13 candidates from
+  14 message/associated-message nodes and associates four recovered attachment
+  payloads; each carries a non-fatal PidTagAttachSize warning.
 - Native attachment candidates retain message BID/NID association, declared
   and readable sizes, `Content-ID`, and MIME role when their properties are
   readable; payload collection remains bounded in memory.
 - Indexed Thunderbird `mbox + .sbd` export, plus a separate native-recovery
   mbox and `.eml` files. Individual message or attachment failures do not stop
   the export.
-- Indexed parsing of 4 KiB B-tree pages and compressed blocks, smoke-tested
-  against public OST samples, including an attachment-bearing sample (12
-  messages, 4 attachments exported without failures).
+- Indexed parsing of 4 KiB B-tree pages, BBT-declared compressed blocks,
+  XBLOCK and subnode payloads is smoke-tested against a public
+  attachment-bearing OST. Full attachment export is still not established.
 - JSON reporting, space checks, progress/idle-timeout controls, and provenance
   for native candidates.
 
@@ -26,11 +29,51 @@ This is a useful diagnostic/export baseline, not yet a complete OST recovery
 engine. Native items can be partial, duplicate indexed messages, and lack a
 reliable original folder path.
 
+## Evidence status — 2026-10-18
+
+- [x] Deterministic synthetic corruption smoke covers header CRC, declared
+  size, truncation, missing B-tree roots, and block trailers without panic.
+- [x] Public 4 KiB sample header, NBT/BBT traversal, XBLOCK and subnode
+  payload paths complete successfully.
+- [x] Native recovery now filters NBT message types instead of spending its
+  bounded budget on folders and service nodes.
+- [x] Native HN/PC decoding produces 13 conservative recovered-message
+  candidates from 14 message/associated-message nodes on the public 4 KiB
+  sample. Four attachment records are associated with status `recovered` and
+  the scan reports zero resolution errors. PidTagAttachSize is larger than
+  the data property, as permitted by the MAPI definition.
+- [x] The 4 KiB compressed-block model is confirmed for this sample: BBT leaf
+  entries carry compressed CB at bytes 16:18 and InflatedSize at bytes 18:20;
+  zlib-wrapped payloads inflate to HN roots. This does not yet cover every
+  4 KiB compression/encryption variant.
+- [ ] End-to-end export of all public-sample messages and attachments is
+  reproducible in the current CLI; native candidate collection and attachment
+  association and bounded payload recovery are proven for four attachments;
+  full CLI export is still a separate end-to-end check.
+
+## Immediate execution queue
+
+- [x] Add a regression assertion for the public sample baseline: 14 attempted
+  message/associated-message nodes and at least 13 candidates.
+- [x] Validate the 4 KiB subnode leaf stride and normalize 4K subnode NIDs to
+  the low 32 bits used by PC references; recursively follow nested SubBIDs.
+- [x] Resolve the remaining attachment property references (`0x819F` and
+  `0x827F`) by inflating BBT-declared compressed leaf payloads even when the
+  BID carries the internal flag.
+- [x] Re-run attachment association: four attachments are associated and all
+  four have status `recovered`; size differences are non-fatal warnings.
+- [x] Confirm the size semantics: PidTagAttachSize includes attachment-object
+  properties and must not be compared directly with the 0x3701 data length.
+- [ ] Only then implement or claim complete attachment export.
+
 ## Now — recover and associate attachments
 
 - [ ] Resolve arbitrary native attachment streams without buffering their
   complete payload; preserve declared/readable size, checksum, output path, and
   per-attachment errors.
+- [ ] Deferred: implement this only after the current native-first CLI and
+  bounded manifest path remain stable; this is the next deep format task, not a
+  prerequisite for safe recovery of the proven sample.
 - [ ] Recover attachment tables and associate each attachment with its parent
   message using structural identifiers; keep inline, embedded, and external
   cases distinct.
@@ -67,14 +110,16 @@ reliable original folder path.
   cases for truncation, roots, allocation maps, subnodes, and payloads.
 - [ ] Test a genuine Outlook OST containing local-only Sent/Drafts and
   attachments.
-- [x] Smoke-test indexed 4 KiB page/block parsing on two genuine public OSTs:
+- [ ] Smoke-test indexed 4 KiB page/block parsing on two genuine public OSTs:
   the [freepst sample](https://github.com/hrbrmstr/freepst/blob/master/inst/extdata/example-2013.ost)
   exported 3 messages (no attachments), and the
   [GroupDocs sample](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/)
-  exported 12 messages and 4 attachments without failures. Samples remain in
-  `/tmp` only and are not committed.
-- [x] Smoke-test indexed attachment extraction from a genuine public 4 KiB OST:
-  4 attachments exported without failures.
+  passes low-level 4 KiB/index/XBLOCK/subnode smoke. The previous 12-message/
+  4-attachment export result is retained as historical evidence only and is
+  not reproduced by the current CLI. Samples are local and not committed.
+- [ ] Smoke-test indexed/native attachment extraction from a genuine public
+  4 KiB OST. Current evidence proves attachment references and some payload
+  paths, but not four complete exported attachments.
 - [ ] Validate other 4 KiB compression/encryption variants and native/orphan
   attachment-tree recovery against additional attachment-bearing OST samples.
 
@@ -93,3 +138,16 @@ On a copy of a real OST, OSTOM reports folders/messages/attachments and their
 readability, localizes failures, exports every independently readable item into
 a Thunderbird-compatible hierarchy, produces a reproducible recovery record,
 and never modifies or uploads the source.
+
+## Recovery completion evidence — 2026-10-18
+
+- [x] Full CLI recovery smoke completed on `testdata/external/sample.ost` with
+  an external timeout and a 60-second indexed-worker timeout.
+- [x] Native-first recovery completes before the optional indexed backend;
+  the public 4 KiB sample produced 13 native candidates and 4 attachments.
+- [x] `ostom-report.json`, `recovery-manifest.json`, and
+  `recovery-manifest.csv` are written even when indexed go-pst stalls.
+- [x] Deep recovery no longer enables go-pst recovery heuristics; go-pst is
+  ordinary best-effort indexed export only.
+- [ ] Indexed go-pst export is not complete on this sample: it stalls while
+  reading a later message and is reported as a bounded backend error.

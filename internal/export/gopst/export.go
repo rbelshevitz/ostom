@@ -193,25 +193,31 @@ func exportWithHeartbeatMode(filename, outputDir string, heartbeat func(), expec
 	if err != nil {
 		return r, err
 	}
-	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), filepath.Join(outputDir, "OSTOM EML"), nil, &r, heartbeat, progress); err != nil {
+	visited := map[pst.Identifier]bool{root.Identifier: true}
+	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), filepath.Join(outputDir, "OSTOM EML"), nil, &r, heartbeat, progress, visited); err != nil {
 		return r, err
 	}
 	return r, nil
 }
 
-func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int)) error {
+func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int), visited map[pst.Identifier]bool) error {
 	children, err := parent.GetSubFolders()
 	if err != nil {
 		return fmt.Errorf("read subfolders of %q: %w", parent.Name, err)
 	}
 	for _, folder := range children {
 		callHeartbeat(heartbeat)
+		if visited[folder.Identifier] {
+			r.Errors = append(r.Errors, fmt.Sprintf("skip repeated folder %q (identifier %d)", folder.Name, folder.Identifier))
+			continue
+		}
+		visited[folder.Identifier] = true
 		path := append(append([]string{}, parentPath...), folder.Name)
 		r.Folders++
 		if err := exportFolder(folder, root, emlRoot, path, r, heartbeat, progress); err != nil {
 			r.Errors = append(r.Errors, err.Error())
 		}
-		if err := exportChildren(folder, root, emlRoot, path, r, heartbeat, progress); err != nil {
+		if err := exportChildren(folder, root, emlRoot, path, r, heartbeat, progress, visited); err != nil {
 			r.Errors = append(r.Errors, err.Error())
 		}
 	}

@@ -86,7 +86,8 @@ physical ranges fit inside the file.
 Indexed reading handles 4 KiB B-tree pages and compressed blocks. The BBT
 provides stored and inflated block lengths; inflation is bounded by the
 declared length and checked for an exact match. A public OST sample smoke
-exported 12 messages and 4 attachments without failures. This validates the
+yielded bounded native message candidates, while complete attachment export
+remains unproven. This validates the
 indexed path on one sample, not every 4 KiB block, compression, encryption, or
 native/orphan attachment-tree variant. CRC mismatches remain diagnostic
 evidence, not a corruption verdict by themselves.
@@ -99,13 +100,66 @@ This matters operationally: a parser that recognizes the `SO` OST signature but 
 
 `libpff` remains a useful independent implementation reference. It has a different role and license from OSTOM and is not part of the MIT core.
 
+### Proven attachment and 4 KiB block semantics
+
+The following points are now supported by both the Microsoft documentation and
+the external GroupDocs OST smoke test:
+
+- A 4 KiB BBT leaf stores the compressed/stored byte count (`CB`) at bytes
+  `16:18` and the inflated byte count (`InflatedSize`) at bytes `18:20`.
+  Compression is indicated by the stored and inflated sizes differing; it is
+  not safe to decide whether to inflate from the BID internal/external bit
+  alone. The observed sample uses zlib-wrapped DEFLATE payloads. The BBT
+  declaration is the allocation bound and the decoded length must match it.
+- Attachment objects live in a message's subnode B-tree. The attachment table
+  identifies attachment objects, while each attachment object has its own
+  property context and may contain `PidTagAttachDataBinary`/`PidTagAttachDataObject`
+  (`0x3701`) as the actual data property. This is distinct from the attachment
+  table row and from the parent message property context. See the [MS-PST
+  attachment object description](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/46eb4828-c6a5-420d-a137-9ee36df317c1).
+- `PidTagAttachSize`/`PR_ATTACH_SIZE` (`0x0E20`) is not the length of `0x3701`.
+  Microsoft defines it as the sum of the attachment object's property sizes;
+  the sum includes the data property and is therefore usually larger than the
+  attachment data alone. It is useful as an object-size/progress hint, not as
+  a direct completeness check for the binary stream. See the [Microsoft
+  canonical property definition](https://learn.microsoft.com/en-us/office/client-developer/outlook/mapi/pidtagattachsize-canonical-property)
+  and the [protocol definition](https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxcmsg/4a697c58-88e1-418a-8110-75f4c56c1fef).
+- A payload is incomplete only when the data property is unavailable, the
+  bounded reader truncates it, or its data tree cannot be completed. A larger
+  `PidTagAttachSize` is recorded as a warning and must not by itself downgrade
+  a readable attachment to `partial`.
+
+The current public sample consequently proves the following bounded result:
+14 message/associated-message nodes are attempted, 13 message candidates are
+collected, four attachment objects are associated, all four data properties are
+readable under the test limits, and the scan reports zero resolution errors.
+The four records carry non-fatal `PidTagAttachSize` warnings. This is evidence
+of recoverable attachment data and association, not a claim that every Outlook
+export path or every 4 KiB OST variant is supported.
+
+### Current attachment export boundary
+
+The current native exporter deliberately materializes each recovered attachment
+payload in a bounded `[]byte` before rendering the message. This is sufficient
+for the proven sample and keeps allocation limits explicit, but it is not the
+final streaming design. Arbitrary XBLOCK/XXBLOCK/SLBLOCK chains, multi-block
+attachment streams, and truncation during a chain are not yet exposed as a
+streaming reader or written incrementally to the output. Until that work is
+completed, a recovered attachment is only claimed within the configured byte
+limit and its readable/partial status is recorded separately.
+
+The independent [libpff attachment notes](https://github.com/libyal/libpff/blob/main/documentation/Personal%20Folder%20File%20(PFF)%20format.asciidoc#1251-the-attachments-sub-item)
+also document real-world cases where attachment size and the `0x3701` value do
+not line up, including data stored in another property or in a split attached
+message. Those cases remain separate recovery hypotheses for OSTOM.
+
 ### External 4 KiB compatibility smoke
 
 Real mail stores are not committed to this repository. Two public OST files
 have been used for local smoke testing (2026-10-18):
 
 - [`example-2013.ost` from freepst](https://raw.githubusercontent.com/hrbrmstr/freepst/master/inst/extdata/example-2013.ost), an Apache-2.0 project fixture. It exported 3 indexed messages and has no attachments. Observed SHA-256: `b18ff390d0c22273029ee580ab6025976af69a4f84e276d1b1c01a988650853d`.
-- [`sample.ost` from the GroupDocs example page](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/). Header inspection identified a 4 KiB Unicode OST. OSTOM exported 12 indexed messages and 4 attachments with no attachment failures; the output contained 4 MIME attachment sections.
+- [`sample.ost` from the GroupDocs example page](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/). Header inspection identified a 4 KiB Unicode OST. The current native path yields 13 bounded candidates from 14 message/associated-message nodes after reading BBT `InflatedSize`; complete attachment export is not yet reproduced.
 
 These are smoke tests, not exhaustive coverage or a representative mailbox
 corpus. The GroupDocs file was used locally and is not redistributed by OSTOM.
@@ -150,7 +204,7 @@ These references define the byte-level format. Library behaviour is a separate i
 
 Primary references: [MS-PST NDB layer](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/e4efaad0-1876-446e-9d34-bb921588f924), [BBT leaf entry](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/53a4b926-8ac4-45c9-9c6d-8358d951dbcd), and [NBT leaf entry](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/28fb2116-0998-4485-9844-9711b95603ba).
 
-The payload pre-scan currently reads unique NBT-referenced blocks under a hard limit, classifies their first byte as external data, extended block, or subnode block, performs bounded advisory trailer/signature/CRC checks, parses bounded XBLOCK/SLBLOCK headers, and follows newly discovered BIDs through a bounded work queue. It reports internal references, subnode entry counts, logical sizes, and unreadable discovered blocks, but does not yet assemble a complete logical stream or reconstruct message/attachment streams.
+The payload pre-scan currently reads unique NBT-referenced blocks under a hard limit, classifies their first byte as external data, extended block, or subnode block, performs bounded advisory trailer/signature/CRC checks, parses bounded XBLOCK/SLBLOCK headers, and follows newly discovered BIDs through a bounded work queue. It reports internal references, subnode entry counts, logical sizes, and unreadable discovered blocks, but does not yet assemble every arbitrary tree into a complete streaming message/attachment stream.
 
 Trailer checks are reported as warnings, not as a final verdict. The bundled
 corpus can be readable by the high-level parser even when the bytes found at a

@@ -6,6 +6,7 @@ package format
 import (
 	"bytes"
 	"compress/flate"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -83,16 +84,18 @@ type IndexTreeScan struct {
 }
 
 type blockLocation struct {
-	offset uint64
-	size   uint16
+	offset       uint64
+	size         uint16
+	inflatedSize uint16
 }
 
 // IndexedBlockLocation exposes only the physical location needed by fixture
 // tooling and diagnostics. It does not expose mutable parser state.
 type IndexedBlockLocation struct {
-	BID    uint64
-	Offset uint64
-	Size   uint16
+	BID          uint64
+	Offset       uint64
+	Size         uint16
+	InflatedSize uint16 `json:"inflated_size,omitempty"`
 }
 
 // IndexedBlockLocations returns BBT leaf locations for a bounded indexed
@@ -107,7 +110,7 @@ func IndexedBlockLocations(name string, h Header, fileSize int64, maxPages, maxD
 	}
 	locations := make(map[uint64]IndexedBlockLocation, len(bbt.blockLocations))
 	for bid, location := range bbt.blockLocations {
-		locations[bid] = IndexedBlockLocation{BID: bid, Offset: location.offset, Size: location.size}
+		locations[bid] = IndexedBlockLocation{BID: bid, Offset: location.offset, Size: location.size, InflatedSize: location.inflatedSize}
 	}
 	return locations, nil
 }
@@ -382,7 +385,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 	seen := make(map[uint64]bool)
 	total := 0
 	for _, node := range nbt.nodeBIDs {
-		if node.dataBID != 0 && !seen[node.dataBID] {
+		if isMessageNID(node.nid) && node.dataBID != 0 && !seen[node.dataBID] {
 			seen[node.dataBID] = true
 			total++
 			if total == maxNodes {
@@ -395,7 +398,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		progress(0, total)
 	}
 	for _, node := range nbt.nodeBIDs {
-		if node.dataBID == 0 || seen[node.dataBID] {
+		if !isMessageNID(node.nid) || node.dataBID == 0 || seen[node.dataBID] {
 			continue
 		}
 		seen[node.dataBID] = true
@@ -422,7 +425,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		}
 		result, parseErr := ParseIndexedPropertyContextWithSubnodes(name, h, fileSize, node.dataBID, maxBlocks, maxBytes, maxRecords, subnodes)
 		if parseErr != nil {
-			scan.addError(parseErr, maxErrorSamples)
+			scan.addError(fmt.Errorf("NID 0x%X BID 0x%X: %w", node.nid, node.dataBID, parseErr), maxErrorSamples)
 			continue
 		}
 		for _, resolutionErr := range result.ResolutionErrors {
@@ -460,6 +463,20 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 	}
 	scan.Status = "completed"
 	return scan, nil
+}
+
+// isMessageNID limits native message recovery to NBT objects whose NID type
+// identifies a normal or associated message. Folders, tables, queues and
+// other service objects also carry data BIDs, but parsing those BIDs as HN/PC
+// message roots produces misleading corruption errors and wastes recovery
+// limits on the real mailbox contents.
+func isMessageNID(nid uint64) bool {
+	switch nid & 0x1F {
+	case 0x04, 0x08: // normal message, associated message
+		return true
+	default:
+		return false
+	}
 }
 
 // hasAttachmentProperties requires explicit attachment MAPI evidence before a
@@ -517,14 +534,8 @@ func (s indexedPayloadSource) Payload(bid uint64) ([]byte, error) {
 		return nil, err
 	}
 	payload := decodeBlockPayload(data[:location.size], bid, s.method)
-	if s.pageSize == 4096 && bid&0x2 == 0 {
-		// The 4 KiB OST footer records the logical size. A larger value means
-		// this external block is a raw RFC 1951 stream; internal X/SL blocks
-		// themselves are never compressed.
-		uncompressedSize := binary.LittleEndian.Uint16(data[aligned+18 : aligned+20])
-		if uncompressedSize > uint16(len(payload)) {
-			return inflatePFFBlock(payload, int(uncompressedSize))
-		}
+	if s.pageSize == 4096 && location.inflatedSize > 0 && location.inflatedSize != location.size {
+		return inflatePFFBlock(payload, int(location.inflatedSize))
 	}
 	return payload, nil
 }
@@ -536,14 +547,24 @@ func blockLayout(pageSize int) (alignment, trailerSize uint64) {
 	return 64, 16
 }
 
-// inflatePFFBlock decodes the raw DEFLATE form used by compressed 4 KiB OST
-// data blocks. The footer is both the expected size and a hard allocation
-// limit, so corrupt compressed input cannot grow without bound.
+// inflatePFFBlock decodes compressed 4 KiB OST data blocks. Real-world files
+// use both raw DEFLATE and zlib-wrapped DEFLATE; the footer is both the
+// expected size and a hard allocation limit, so corrupt input cannot grow
+// without bound.
 func inflatePFFBlock(compressed []byte, expectedSize int) ([]byte, error) {
 	if expectedSize <= 0 || expectedSize > 64<<10 {
 		return nil, fmt.Errorf("invalid 4 KiB block uncompressed size %d", expectedSize)
 	}
-	r := flate.NewReader(bytes.NewReader(compressed))
+	var r io.ReadCloser
+	if len(compressed) >= 2 && compressed[0] == 0x78 {
+		zlibReader, err := zlib.NewReader(bytes.NewReader(compressed))
+		if err == nil {
+			r = zlibReader
+		}
+	}
+	if r == nil {
+		r = flate.NewReader(bytes.NewReader(compressed))
+	}
 	defer r.Close()
 	decoded, err := io.ReadAll(io.LimitReader(r, int64(expectedSize)+1))
 	if err != nil {
@@ -615,6 +636,12 @@ func streamPayloadFromSource(source payloadSource, bid uint64, maxBlocks int, ma
 		if expectedLevel == 0xFF && current&0x2 == 0 {
 			return emit(payload)
 		}
+		if expectedLevel == 0xFF && current&0x2 != 0 && sourceIs4K(source) && payload[0] != 0x01 {
+			// Unicode4k BBT entries can mark a compressed leaf with the
+			// internal BID bit. InflatedSize identifies the stored block as
+			// compressed; after inflation a non-XBLOCK payload is terminal.
+			return emit(payload)
+		}
 		if expectedLevel == 1 && current&0x2 == 0 {
 			return fmt.Errorf("BID 0x%X is external where an XBLOCK was expected", current)
 		}
@@ -654,6 +681,11 @@ func streamPayloadFromSource(source payloadSource, bid uint64, maxBlocks int, ma
 		return result, err
 	}
 	return result, nil
+}
+
+func sourceIs4K(source payloadSource) bool {
+	indexed, ok := source.(indexedPayloadSource)
+	return ok && indexed.pageSize == 4096
 }
 
 func parseExtendedBlockBounded(data []byte, format disk.PSTFormat, expectedLevel byte) (*disk.ExtendedBlock, error) {
@@ -701,6 +733,10 @@ type SubnodeTreeResult struct {
 }
 
 func parseSubnodeBlockBounded(payload []byte) (*disk.SubnodeBlock, error) {
+	return parseSubnodeBlockBoundedForPage(payload, 512)
+}
+
+func parseSubnodeBlockBoundedForPage(payload []byte, pageSize int) (*disk.SubnodeBlock, error) {
 	if len(payload) < 8 || payload[0] != 0x02 {
 		return nil, fmt.Errorf("invalid or truncated subnode block header")
 	}
@@ -745,10 +781,14 @@ func WalkIndexedSubnodeTree(name string, h Header, fileSize int64, rootBID uint6
 	}
 	defer f.Close()
 	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
-	return walkSubnodeTreeFromSource(source, rootBID, maxBlocks)
+	return walkSubnodeTreeFromSourceWithPageSize(source, rootBID, maxBlocks, h.PageSize)
 }
 
 func walkSubnodeTreeFromSource(source payloadSource, rootBID uint64, maxBlocks int) (map[uint64]SubnodeTreeEntry, SubnodeTreeResult, error) {
+	return walkSubnodeTreeFromSourceWithPageSize(source, rootBID, maxBlocks, 512)
+}
+
+func walkSubnodeTreeFromSourceWithPageSize(source payloadSource, rootBID uint64, maxBlocks, pageSize int) (map[uint64]SubnodeTreeEntry, SubnodeTreeResult, error) {
 	entries := make(map[uint64]SubnodeTreeEntry)
 	result := SubnodeTreeResult{}
 	if rootBID == 0 || maxBlocks <= 0 {
@@ -778,7 +818,7 @@ func walkSubnodeTreeFromSource(source payloadSource, rootBID uint64, maxBlocks i
 			result.Invalid++
 			return err
 		}
-		block, err := parseSubnodeBlockBounded(payload)
+		block, err := parseSubnodeBlockBoundedForPage(payload, pageSize)
 		if err != nil {
 			result.Invalid++
 			return fmt.Errorf("BID 0x%X: %w", bid, err)
@@ -788,8 +828,23 @@ func walkSubnodeTreeFromSource(source payloadSource, rootBID uint64, maxBlocks i
 		if block.IsLeaf() {
 			result.Leaves++
 			for _, entry := range block.LeafEntries {
-				entries[entry.NID] = SubnodeTreeEntry{NID: entry.NID, DataBID: entry.DataBID, SubBID: entry.SubBID}
+				nid := entry.NID
+				if pageSize == 4096 {
+					// Unicode4k stores subnode NIDs in a 64-bit slot, but the
+					// NID value used by PC references is the low 32 bits.
+					nid = uint64(uint32(nid))
+				}
+				entries[nid] = SubnodeTreeEntry{NID: nid, DataBID: entry.DataBID, SubBID: entry.SubBID}
 				result.Entries++
+				if entry.SubBID != 0 {
+					if entry.SubBID&0x2 == 0 {
+						result.Invalid++
+						return fmt.Errorf("BID 0x%X has invalid child subnode BID 0x%X", bid, entry.SubBID)
+					}
+					if err := visit(entry.SubBID, depth+1); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		}
@@ -1066,7 +1121,9 @@ type RecoveredMessage struct {
 }
 
 // RecoveredAttachment is bounded attachment metadata plus an optional payload.
-// Missing/subnode payloads remain visible through Incomplete and Errors.
+// Missing/truncated payloads remain visible through Incomplete and Errors;
+// PidTagAttachSize versus payload-size differences are non-fatal Warnings
+// because the former describes the attachment object, not only its data.
 type RecoveredAttachment struct {
 	NID          uint64   `json:"nid"`
 	Name         string   `json:"name,omitempty"`
@@ -1081,6 +1138,7 @@ type RecoveredAttachment struct {
 	Inline       bool     `json:"inline"`
 	Incomplete   bool     `json:"incomplete"`
 	Errors       []string `json:"errors,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 // RecoveredMessageCollector turns resolved native properties into bounded
@@ -1250,8 +1308,7 @@ func (c *RecoveredMessageCollector) AddAttachmentPropertiesWithErrors(messageBID
 		}
 		attachment.Role = attachmentRole(attachment.AttachMethod, attachment.Inline)
 		if attachment.DeclaredSize > int64(len(attachment.Data)) {
-			attachment.Incomplete = true
-			attachment.Errors = append(attachment.Errors, "declared attachment size exceeds readable bytes")
+			attachment.Warnings = append(attachment.Warnings, "PidTagAttachSize exceeds attachment data length; it includes the attachment object properties")
 		}
 		if attachment.Role != "external" && attachment.DeclaredSize == 0 && len(attachment.Data) == 0 {
 			attachment.Incomplete = true
@@ -2467,9 +2524,10 @@ type indexPage struct {
 // Keeping this small record separate from message parsing lets inspection stay
 // read-only and useful even when higher-level node data is damaged.
 type blockRef struct {
-	bid    uint64
-	offset uint64
-	size   uint16
+	bid          uint64
+	offset       uint64
+	size         uint16
+	inflatedSize uint16
 }
 
 type nodeRef struct {
@@ -2501,7 +2559,7 @@ func scanBlockRefs(scan *IndexTreeScan, refs []blockRef, fileSize int64) {
 	for _, ref := range refs {
 		scan.BlockRefs++
 		scan.blockBIDs[ref.bid] = true
-		scan.blockLocations[ref.bid] = blockLocation{offset: ref.offset, size: ref.size}
+		scan.blockLocations[ref.bid] = blockLocation{offset: ref.offset, size: ref.size, inflatedSize: ref.inflatedSize}
 		end := ref.offset + uint64(ref.size)
 		if end < ref.offset || ref.offset >= uint64(fileSize) || end > uint64(fileSize) || ref.size == 0 {
 			scan.BadBlocks++
@@ -2554,6 +2612,12 @@ func readIndexPage(f *os.File, offset uint64, pageSize int, fileSize int64, expe
 				bid:    binary.LittleEndian.Uint64(page[pos : pos+8]),
 				offset: binary.LittleEndian.Uint64(page[pos+8 : pos+16]),
 				size:   binary.LittleEndian.Uint16(page[pos+16 : pos+18]),
+				inflatedSize: func() uint16 {
+					if pageSize == 4096 && entrySize >= 20 {
+						return binary.LittleEndian.Uint16(page[pos+18 : pos+20])
+					}
+					return 0
+				}(),
 			})
 		}
 	} else if expectedType == 0x81 {

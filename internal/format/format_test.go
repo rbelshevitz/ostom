@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"compress/flate"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -136,6 +137,19 @@ func TestInflatePFF4KBlock(t *testing.T) {
 	if _, err := inflatePFFBlock(compressed.Bytes(), len(plain)+1); err == nil {
 		t.Fatal("incorrect 4 KiB footer size was accepted")
 	}
+
+	var zlibCompressed bytes.Buffer
+	zw := zlib.NewWriter(&zlibCompressed)
+	if _, err := zw.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = inflatePFFBlock(zlibCompressed.Bytes(), len(plain))
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("unexpected zlib-wrapped 4 KiB inflate: bytes=%d err=%v", len(got), err)
+	}
 }
 
 func TestIndexedPayloadSourceInflates4KExternalBlock(t *testing.T) {
@@ -155,7 +169,6 @@ func TestIndexedPayloadSourceInflates4KExternalBlock(t *testing.T) {
 	aligned := (dataSize + 511) &^ 511
 	data := make([]byte, aligned+24)
 	copy(data, compressed.Bytes())
-	binary.LittleEndian.PutUint16(data[aligned+18:aligned+20], uint16(len(plain)))
 	path := filepath.Join(t.TempDir(), "compressed-4k.ost")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -167,7 +180,7 @@ func TestIndexedPayloadSourceInflates4KExternalBlock(t *testing.T) {
 	defer f.Close()
 	source := indexedPayloadSource{
 		file:      f,
-		locations: map[uint64]blockLocation{0x100: {offset: 0, size: uint16(dataSize)}},
+		locations: map[uint64]blockLocation{0x100: {offset: 0, size: uint16(dataSize), inflatedSize: uint16(len(plain))}},
 		fileSize:  int64(len(data)),
 		pageSize:  4096,
 	}
@@ -210,19 +223,19 @@ func TestStreamIndexedPayload4KCompressedSmoke(t *testing.T) {
 	binary.LittleEndian.PutUint64(data[224:232], nbtOffset)
 	binary.LittleEndian.PutUint64(data[240:248], bbtOffset)
 
-	// A v36 BBT leaf has the familiar Unicode entries but its footer begins
-	// at byte 4072 and its B-tree header at byte 4056.
+	// A v36 BBT leaf has the familiar Unicode entries; bytes 18:20 hold the
+	// declared inflated size for compressed blocks.
 	bbt := data[bbtOffset : bbtOffset+4096]
 	binary.LittleEndian.PutUint64(bbt[0:8], bid)
 	binary.LittleEndian.PutUint64(bbt[8:16], payloadOffset)
 	binary.LittleEndian.PutUint16(bbt[16:18], uint16(payloadSize))
+	binary.LittleEndian.PutUint16(bbt[18:20], uint16(len(plain)))
 	binary.LittleEndian.PutUint16(bbt[4056:4058], 1)
 	binary.LittleEndian.PutUint16(bbt[4058:4060], 1)
 	bbt[4060], bbt[4061] = 24, 0
 	bbt[4072], bbt[4073] = 0x80, 0x80
 	binary.LittleEndian.PutUint32(bbt[4076:4080], disk.ComputeCRC(bbt[:4072]))
 	copy(data[payloadOffset:], compressed.Bytes())
-	binary.LittleEndian.PutUint16(data[payloadOffset+alignedSize+18:payloadOffset+alignedSize+20], uint16(len(plain)))
 
 	path := filepath.Join(t.TempDir(), "compressed-4k-smoke.ost")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -382,14 +395,43 @@ func TestExternal4KNativeRecoverySmoke(t *testing.T) {
 	if !h.OK || h.PageSize != 4096 {
 		t.Skip("external corpus is not a supported 4 KiB PFF")
 	}
-	scan, err := CollectIndexedRecoveredMessages(path, h, info.Size(), 512, 256, 4<<20, 1024, 64, 1<<20, 32)
+	nbt, _ := WalkIndexTrees(path, h, info.Size(), 100000, 64)
+	types := make(map[uint64]int)
+	for _, node := range nbt.nodeBIDs {
+		types[node.nid&0x1F]++
+	}
+	t.Logf("native NID types: %+v crypt=%s", types, h.Encryption)
+	scan, err := CollectIndexedRecoveredMessagesWithAttachmentLimit(path, h, info.Size(), 512, 4096, 64<<20, 1024, 64, 1<<20, 64<<20, 32, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if scan.Status != "completed" || scan.NodesAttempted == 0 {
 		t.Fatalf("native 4 KiB collection did not run: %+v", scan)
 	}
+	if scan.NodesAttempted != 14 || len(scan.Messages) < 13 {
+		t.Fatalf("native 4 KiB baseline regressed: candidates=%d attempted=%d errors=%d", len(scan.Messages), scan.NodesAttempted, scan.Errors)
+	}
+	attachmentCount := 0
+	statusCounts := make(map[string]int)
+	for _, message := range scan.Messages {
+		for _, attachment := range message.Attachments {
+			attachmentCount++
+			statusCounts[attachment.Status]++
+		}
+	}
+	if scan.Errors != 0 || attachmentCount != 4 || statusCounts["recovered"] != 4 {
+		t.Fatalf("native 4 KiB attachment baseline regressed: attachments=%d statuses=%v errors=%d", attachmentCount, statusCounts, scan.Errors)
+	}
+	for _, message := range scan.Messages {
+		for _, attachment := range message.Attachments {
+			t.Logf("native 4 KiB attachment nid=0x%X status=%s declared=%d readable=%d incomplete=%v errors=%v warnings=%v", attachment.NID, attachment.Status, attachment.DeclaredSize, attachment.ReadableSize, attachment.Incomplete, attachment.Errors, attachment.Warnings)
+		}
+	}
 	t.Logf("native 4 KiB candidates=%d attempted=%d errors=%d", len(scan.Messages), scan.NodesAttempted, scan.Errors)
+	t.Logf("native 4 KiB attachments=%d statuses=%v", attachmentCount, statusCounts)
+	for _, sample := range scan.ErrorSamples {
+		t.Logf("native recovery error: %s", sample)
+	}
 }
 
 func TestStreamPayloadFromSourceRejectsTreeDamage(t *testing.T) {
