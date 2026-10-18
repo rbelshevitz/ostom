@@ -32,20 +32,14 @@ func main() {
 	exportDir := flag.String("export-dir", "", "directory for Thunderbird Local Folders export")
 	outputDir := flag.String("output-dir", "", "directory for ostom-report.json")
 	recoveryScan := flag.Bool("recovery-scan", false, "also run bounded native recovery")
-	memoryLimit := flag.Int("memory-limit", 256, "native recovery memory budget hint in MiB")
-	idleTimeout := flag.Duration("idle-timeout", 10*time.Minute, "reserved worker idle timeout")
 	quiet := flag.Bool("quiet", false, "suppress progress on stderr")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: ostom [--json] [--export-dir DIR] [--recovery-scan] file.ost")
+		fmt.Fprintln(os.Stderr, "Usage: ostom [--json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost")
 		os.Exit(2)
 	}
-	if *memoryLimit < 0 {
-		fmt.Fprintln(os.Stderr, "--memory-limit must not be negative")
-		os.Exit(2)
-	}
-	if *idleTimeout < 0 {
-		fmt.Fprintln(os.Stderr, "--idle-timeout must not be negative")
+	if *recoveryScan && *exportDir == "" {
+		fmt.Fprintln(os.Stderr, "--recovery-scan requires --export-dir")
 		os.Exit(2)
 	}
 

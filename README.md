@@ -37,26 +37,19 @@ The project is deliberately not a forensic suite. It does not claim chain of cus
 If you only need to rescue mail, you do not need to understand the file format
 or build the source code. Download the latest [Windows amd64 release](https://github.com/rbelshevitz/ostom/releases), close Outlook, and make a copy of the OST/PST file.
 
-1. Inspect the copy and check the destination disk:
+1. Inspect the copy:
 
    ```powershell
-   .\ostom.exe --output-dir E:\recovered source-copy.ost
+   .\ostom.exe source-copy.ost
    ```
 
-2. Read the result in the console. If it says that an extended recovery scan
-   is recommended or required, run:
-
-   ```powershell
-   .\ostom.exe --recovery-scan --output-dir E:\recovered source-copy.ost
-   ```
-
-3. Export readable mail to Thunderbird:
+2. Export readable mail to Thunderbird:
 
    ```powershell
    .\ostom.exe --export-dir E:\recovered source-copy.ost
    ```
 
-   If you also want the extended recovery output, combine both options:
+3. If you also want to run the optional extended recovery pass, use:
 
    ```powershell
    .\ostom.exe --recovery-scan --export-dir E:\recovered source-copy.ost
@@ -79,13 +72,11 @@ forensic recovery suite. Its practical difference is the recovery workflow:
   “This computer only” folders are treated as worth recovering.
 - **Inspect before extracting:** header, allocation, NBT/BBT, folder, message,
   payload, and attachment evidence are reported separately.
-- **Honest resource planning:** export space is estimated before a long export,
-  with a clear insufficient-space result.
 - **Partial results are first-class:** one bad node, message, or attachment does
   not discard the readable remainder; indexed and recovery-found items are kept
   separate.
-- **Operationally useful on Windows:** bounded memory, honest `N/M` progress,
-  idle watchdogs, JSON output, and a Thunderbird-ready folder tree are built in.
+- **Operationally useful on Windows:** progress output, JSON reports, and a
+  Thunderbird-ready folder tree are built in.
 - **Explainable escalation:** extended recovery is recommended only with explicit
   evidence, not because of one advisory CRC mismatch.
 
@@ -150,7 +141,7 @@ The current milestone implements a bounded-memory inspection and Thunderbird
 export CLI on top of `github.com/grokify/outlook-pst-go`:
 
 ```text
-ostom [--json] [--memory-limit 256] file.ost
+ostom [--json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost
 ```
 
 ## Build and run
@@ -159,9 +150,9 @@ Install Go 1.24 or newer, then run these commands from the repository root.
 Go downloads the declared modules automatically on the first build:
 
 ```powershell
-go build -o ostom.exe ./cmd/ostom
-go build -o ostom-fixture.exe ./cmd/ostom-fixture
-go test ./...
+go build -trimpath -o ostom.exe ./cmd/ostom
+go build -trimpath -o ostom-fixture.exe ./cmd/ostom-fixture
+go test -trimpath ./...
 go vet ./...
 ```
 
@@ -209,12 +200,14 @@ certificate authority. Never publish the private `.pfx` signing key.
 The main options are:
 
 - `--json` — machine-readable report.
-- `--output-dir DIR` — volume to check for required free space.
+- `--output-dir DIR` — directory for `ostom-report.json`; defaults to
+  `--export-dir` when set. It does not check free space.
 - `--export-dir DIR` — export indexed readable mail into a Thunderbird `Local Folders` tree.
-- `--recovery-scan` — explicitly run the slower deep recovery pass: the
-  existing best-effort probe plus OSTOM's bounded native collector.
-- `--memory-limit MB` — soft process memory limit; default `256`, `0` disables it.
-- `--idle-timeout DUR` — worker idle timeout; default `10m`, `0` disables it.
+- `--recovery-scan` — also run the slower bounded native recovery pass and
+  enable the dependency's lenient recovery parser for export. Requires
+  `--export-dir`.
+- `--quiet` — suppress progress messages on stderr; warnings and the final
+  report are still printed.
 
 ### Inspection and recovery
 
@@ -230,37 +223,24 @@ separate `Local Folders\OSTOM Native Recovered` folder and marked with
 `X-Ostom-Source: native-recovered`. The JSON and human-readable report keep
 native collection and export counts separate from the lenient indexed export.
 
-Use `--output-dir` during inspection to check the destination volume before recovery:
+Use `--output-dir` to choose where the JSON report is saved:
 
 ```text
 ostom --output-dir E:\recovered file.ost
 ```
 
-The report includes a conservative output-size estimate and marks the result `INSUFFICIENT_SPACE` when the target volume cannot hold it. Recovery must refuse to start in that state.
+If omitted, the report is saved in `--export-dir` when exporting. This option
+does not estimate output size or check available disk space.
 
 For a slower best-effort node recovery probe:
 
 ```text
-ostom --recovery-scan --output-dir E:\recovered file.ost
+ostom --recovery-scan --export-dir E:\recovered file.ost
 ```
 
-This enables lenient indexed export when an export directory is supplied and
-runs OSTOM's bounded native collector. Without an export directory it reports
-native collection evidence only; with one, native candidates are written to
-their separate `OSTOM Native Recovered` folder.
-
-The CLI runs the parser in a supervised worker process on Windows. By default,
-the worker is terminated after 10 minutes without a heartbeat from message
-processing. Change it for a large or slow store, or disable it explicitly:
-
-```text
-ostom --idle-timeout 30m file.ost
-ostom --idle-timeout 0 file.ost
-```
-
-This is an idle timeout, not a total runtime limit. A timeout never modifies the
-source file and returns `TIMEOUT` instead of presenting partial JSON as a
-successful report.
+This enables lenient indexed export and runs OSTOM's bounded native collector.
+Native candidates are written to their separate `OSTOM Native Recovered`
+folder.
 
 ### Test fixture generator
 
@@ -326,7 +306,9 @@ an unbounded in-memory list.
 
 It reports file/header recognition, parser/index access, folder and message counts, unread count, attachment count, declared attachment bytes, and errors encountered while walking the physical tree.
 
-Human-readable scans show a 30-character progress bar, `N/M declared`, rate, and elapsed time. The denominator is collected before the message pass so it does not move backwards; it is the sum of folder-table declared counts and is itself evidence, not ground truth. If it cannot be established, the bar uses `?` instead of inventing a percentage. A watchdog warns after 60 seconds without message progress but does not forcibly kill a read in the middle of a damaged node.
+During export, the CLI reports indexed message counts and native recovery phases
+to stderr. `--quiet` suppresses this progress output. The CLI does not impose a
+process-wide memory cap or an idle timeout.
 
 The parser dependency is intentionally behind `internal/backend`. The final recovery path must provide streaming message/attachment readers; a backend that materializes an entire attachment is not acceptable for multi-gigabyte files.
 
@@ -384,7 +366,7 @@ The `ostom` CLI opens the source store read-only and does not upload its
 contents. During inspection it writes no recovery files. When an explicit
 `--export-dir` is supplied, it creates or appends Thunderbird-compatible files
 only under that directory. `--output-dir` may also create the explicitly named
-directory so its free space can be checked. The source store is never modified
+directory for the JSON report. The source store is never modified
 by the CLI. The separate `ostom-fixture` developer tool writes only to its
 explicit fixture path and may create a temporary sibling file while generating
 the fixture.
