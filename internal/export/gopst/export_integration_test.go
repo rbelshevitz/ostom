@@ -2,6 +2,7 @@ package gopst
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,20 @@ func TestExportFixturePreservesHierarchy(t *testing.T) {
 	if !strings.HasPrefix(string(b), "From ") || !strings.Contains(string(b), "Date: ") || !strings.Contains(string(b), "MIME-Version: 1.0") {
 		t.Fatalf("exported mbox does not look like an RFC 5322 message: %q", string(b))
 	}
+	emlFiles, err := filepath.Glob(filepath.Join(out, "OSTOM EML", "Top of Personal Folders", "myInbox", "*.eml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emlFiles) != 1 {
+		t.Fatalf("indexed EML files = %v, want exactly one", emlFiles)
+	}
+	eml, err := os.ReadFile(emlFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(string(eml), "From ") || !strings.Contains(string(eml), "MIME-Version: 1.0") {
+		t.Fatalf("indexed EML is not raw RFC 5322 output: %q", string(eml))
+	}
 }
 
 func TestExportCorpusPreservesAttachments(t *testing.T) {
@@ -60,6 +75,8 @@ func TestExportCorpusPreservesAttachments(t *testing.T) {
 		t.Fatal("export did not produce bounded message statuses")
 	}
 	var encodedParts int
+	var emlFiles int
+	var checkedEML bool
 	err = filepath.WalkDir(out, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -72,6 +89,15 @@ func TestExportCorpusPreservesAttachments(t *testing.T) {
 			return err
 		}
 		encodedParts += bytes.Count(data, []byte("Content-Transfer-Encoding: base64"))
+		if strings.HasSuffix(path, ".eml") {
+			emlFiles++
+			if !checkedEML {
+				checkedEML = true
+				if strings.HasPrefix(string(data), "From ") || !bytes.Contains(data, []byte("MIME-Version: 1.0")) {
+					return fmt.Errorf("invalid raw EML fallback %q", path)
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -79,6 +105,9 @@ func TestExportCorpusPreservesAttachments(t *testing.T) {
 	}
 	if encodedParts < 2 {
 		t.Fatalf("base64 MIME attachment parts = %d, want at least 2", encodedParts)
+	}
+	if emlFiles != report.EMLWritten || emlFiles != report.Messages {
+		t.Fatalf("indexed EML files = %d, report EML=%d messages=%d", emlFiles, report.EMLWritten, report.Messages)
 	}
 }
 

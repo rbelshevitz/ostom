@@ -5,6 +5,7 @@ package gopst
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -31,6 +32,8 @@ type Report struct {
 	MessagesPartial   int             `json:"messages_partial"`
 	Attachments       int             `json:"attachments"`
 	AttachmentsFailed int             `json:"attachments_failed"`
+	EMLWritten        int             `json:"eml_written"`
+	EMLFailed         int             `json:"eml_failed"`
 	SkippedMessages   int             `json:"skipped_messages"`
 	MessageStatus     []MessageStatus `json:"message_status,omitempty"`
 	StatusOmitted     int             `json:"message_status_omitted,omitempty"`
@@ -190,13 +193,13 @@ func exportWithHeartbeatMode(filename, outputDir string, heartbeat func(), expec
 	if err != nil {
 		return r, err
 	}
-	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), nil, &r, heartbeat, progress); err != nil {
+	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), filepath.Join(outputDir, "OSTOM EML"), nil, &r, heartbeat, progress); err != nil {
 		return r, err
 	}
 	return r, nil
 }
 
-func exportChildren(parent pst.Folder, root string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int)) error {
+func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int)) error {
 	children, err := parent.GetSubFolders()
 	if err != nil {
 		return fmt.Errorf("read subfolders of %q: %w", parent.Name, err)
@@ -205,17 +208,17 @@ func exportChildren(parent pst.Folder, root string, parentPath []string, r *Repo
 		callHeartbeat(heartbeat)
 		path := append(append([]string{}, parentPath...), folder.Name)
 		r.Folders++
-		if err := exportFolder(folder, root, path, r, heartbeat, progress); err != nil {
+		if err := exportFolder(folder, root, emlRoot, path, r, heartbeat, progress); err != nil {
 			r.Errors = append(r.Errors, err.Error())
 		}
-		if err := exportChildren(folder, root, path, r, heartbeat, progress); err != nil {
+		if err := exportChildren(folder, root, emlRoot, path, r, heartbeat, progress); err != nil {
 			r.Errors = append(r.Errors, err.Error())
 		}
 	}
 	return nil
 }
 
-func exportFolder(folder pst.Folder, root string, path []string, r *Report, heartbeat func(), progress func(done, total int)) error {
+func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Report, heartbeat func(), progress func(done, total int)) error {
 	filePath, err := mboxPath(root, path)
 	if err != nil {
 		return err
@@ -238,18 +241,33 @@ func exportFolder(folder pst.Folder, root string, path []string, r *Report, hear
 			progress(r.MessagesAttempted, r.MessagesExpected)
 		}
 		messageIndex := r.MessagesAttempted
-		written, partial, subject, err := writeMessage(f, iter.Value(), r)
+		written, partial, subject, err := writeMessageWithEML(f, emlRoot, path, messageIndex, iter.Value(), r)
 		status := MessageStatus{Index: messageIndex, Folder: strings.Join(path, "\\"), Subject: subject, Attachments: written}
 		if err != nil {
-			status.Outcome = "failed"
-			status.Error = err.Error()
-			r.SkippedMessages++
-			r.Errors = append(r.Errors, fmt.Sprintf("message in %q: %v", strings.Join(path, "\\"), err))
+			var emlErr *emlWriteError
+			if errors.As(err, &emlErr) {
+				// The mbox was completed before finalizing the fallback file.
+				// Preserve that independently readable message as partial rather
+				// than calling it skipped.
+				status.Outcome = "partial"
+				status.Error = err.Error()
+				r.MessagesPartial++
+				r.Messages++
+				r.EMLFailed++
+				r.Errors = append(r.Errors, fmt.Sprintf("EML fallback in %q: %v", strings.Join(path, "\\"), err))
+			} else {
+				status.Outcome = "failed"
+				status.Error = err.Error()
+				r.SkippedMessages++
+				r.Errors = append(r.Errors, fmt.Sprintf("message in %q: %v", strings.Join(path, "\\"), err))
+			}
 		} else if partial {
 			status.Outcome = "partial"
 			r.MessagesPartial++
+			r.EMLWritten++
 		} else {
 			status.Outcome = "exported"
+			r.EMLWritten++
 		}
 		if err == nil {
 			r.Messages++
@@ -266,6 +284,11 @@ func exportFolder(folder pst.Folder, root string, path []string, r *Report, hear
 	}
 	return nil
 }
+
+type emlWriteError struct{ err error }
+
+func (e *emlWriteError) Error() string { return "write EML fallback: " + e.err.Error() }
+func (e *emlWriteError) Unwrap() error { return e.err }
 
 func recordMessageStatus(r *Report, status MessageStatus) {
 	if len(r.MessageStatus) < messageStatusLimit {
@@ -285,7 +308,86 @@ func writeMessage(out io.Writer, message *pst.Message, r *Report) (int, bool, st
 	return writeMessageWithSource(out, message, r, "indexed")
 }
 
+// writeMessageWithEML streams one RFC 5322 message to both its mbox and a
+// per-message EML file. The EML is written through a temporary sibling and
+// renamed only after the full message is readable, so a failed attachment
+// stream cannot be mistaken for a complete fallback message.
+func writeMessageWithEML(mboxOut io.Writer, emlRoot string, folderPath []string, index int, message *pst.Message, r *Report) (int, bool, string, error) {
+	if len(folderPath) == 0 {
+		return 0, false, "", fmt.Errorf("empty folder path for EML export")
+	}
+	dir := emlRoot
+	for _, part := range folderPath {
+		dir = filepath.Join(dir, safeName(part))
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, false, "", fmt.Errorf("create EML directory: %w", err)
+	}
+	name := fmt.Sprintf("%08d-%016X.eml", index, message.Identifier)
+	finalPath := filepath.Join(dir, name)
+	temporary, err := os.CreateTemp(dir, ".ostom-eml-*")
+	if err != nil {
+		return 0, false, "", fmt.Errorf("create EML file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+
+	if err := writeMboxSeparator(mboxOut, message); err != nil {
+		temporary.Close()
+		return 0, false, "", err
+	}
+	written, partial, subject, err := writeMessageContent(io.MultiWriter(newMboxLineWriter(mboxOut), temporary), message, r, "indexed")
+	if err == nil {
+		_, err = io.WriteString(mboxOut, "\r\n")
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return written, partial, subject, err
+	}
+	if err := os.Rename(temporaryPath, finalPath); err != nil {
+		return written, partial, subject, &emlWriteError{err: fmt.Errorf("finalize EML %q: %w", finalPath, err)}
+	}
+	return written, partial, subject, nil
+}
+
 func writeMessageWithSource(out io.Writer, message *pst.Message, r *Report, source string) (int, bool, string, error) {
+	if err := writeMboxSeparator(out, message); err != nil {
+		return 0, false, "", err
+	}
+	written, partial, subject, err := writeMessageContent(newMboxLineWriter(out), message, r, source)
+	if err != nil {
+		return written, partial, subject, err
+	}
+	if _, err := io.WriteString(out, "\r\n"); err != nil {
+		return written, partial, subject, err
+	}
+	return written, partial, subject, nil
+}
+
+func writeMboxSeparator(out io.Writer, message *pst.Message) error {
+	props, ok := message.Properties.(*properties.Message)
+	if !ok {
+		return fmt.Errorf("unsupported message class %T", message.Properties)
+	}
+	from := props.GetSenderName()
+	if email := props.GetSenderEmailAddress(); email != "" && email != from {
+		from += " <" + email + ">"
+	}
+	if from == "" {
+		from = "unknown"
+	}
+	date := time.Unix(0, props.GetClientSubmitTime()).UTC()
+	if _, err := fmt.Fprintf(out, "From %s %s\r\n", from, date.Format("Mon Jan _2 15:04:05 2006")); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeMessageContent writes only the RFC 5322 payload. Callers choose
+// whether it is sent to an mbox-escaping writer, an EML file, or both.
+func writeMessageContent(lw io.Writer, message *pst.Message, r *Report, source string) (int, bool, string, error) {
 	props, ok := message.Properties.(*properties.Message)
 	if !ok {
 		return 0, false, "", fmt.Errorf("unsupported message class %T", message.Properties)
@@ -299,10 +401,6 @@ func writeMessageWithSource(out io.Writer, message *pst.Message, r *Report, sour
 		from = "unknown"
 	}
 	date := time.Unix(0, props.GetClientSubmitTime()).UTC()
-	if _, err := fmt.Fprintf(out, "From %s %s\r\n", from, date.Format("Mon Jan _2 15:04:05 2006")); err != nil {
-		return 0, false, subject, err
-	}
-	lw := newMboxLineWriter(out)
 	fmt.Fprintf(lw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", props.GetSubject()))
 	fmt.Fprintf(lw, "From: %s\r\n", from)
 	fmt.Fprintf(lw, "Date: %s\r\n", date.Format(time.RFC1123Z))

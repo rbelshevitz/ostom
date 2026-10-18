@@ -2,10 +2,12 @@ package format
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
@@ -112,6 +114,282 @@ func TestStreamPayloadFromSourceXBlockAndXXBlockSmoke(t *testing.T) {
 	if got.String() != "hello world" || result.BlocksRead != 4 || result.BytesProduced != 11 || result.Truncated {
 		t.Fatalf("unexpected XXBLOCK smoke result: %q %+v", got.String(), result)
 	}
+}
+
+func TestInflatePFF4KBlock(t *testing.T) {
+	plain := bytes.Repeat([]byte("local-only message body "), 200)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := inflatePFFBlock(compressed.Bytes(), len(plain))
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("unexpected 4 KiB inflate: bytes=%d err=%v", len(got), err)
+	}
+	if _, err := inflatePFFBlock(compressed.Bytes(), len(plain)+1); err == nil {
+		t.Fatal("incorrect 4 KiB footer size was accepted")
+	}
+}
+
+func TestIndexedPayloadSourceInflates4KExternalBlock(t *testing.T) {
+	plain := bytes.Repeat([]byte("draft attachment "), 100)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dataSize := compressed.Len()
+	aligned := (dataSize + 511) &^ 511
+	data := make([]byte, aligned+24)
+	copy(data, compressed.Bytes())
+	binary.LittleEndian.PutUint16(data[aligned+18:aligned+20], uint16(len(plain)))
+	path := filepath.Join(t.TempDir(), "compressed-4k.ost")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	source := indexedPayloadSource{
+		file:      f,
+		locations: map[uint64]blockLocation{0x100: {offset: 0, size: uint16(dataSize)}},
+		fileSize:  int64(len(data)),
+		pageSize:  4096,
+	}
+	got, err := source.Payload(0x100)
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("unexpected 4 KiB indexed payload: bytes=%d err=%v", len(got), err)
+	}
+}
+
+// TestStreamIndexedPayload4KCompressedSmoke exercises the public recovery
+// path with a deliberately tiny v36 OST-shaped file. It is a format smoke
+// test, not evidence of compatibility with an Outlook-produced OST.
+func TestStreamIndexedPayload4KCompressedSmoke(t *testing.T) {
+	plain := bytes.Repeat([]byte("local Sent draft body\n"), 120)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		bbtOffset     = 0x1000
+		nbtOffset     = 0x2000
+		payloadOffset = 0x3000
+		bid           = 0x100
+	)
+	payloadSize := compressed.Len()
+	alignedSize := (payloadSize + 511) &^ 511
+	data := make([]byte, payloadOffset+alignedSize+24)
+	copy(data[:4], "!BDN")
+	copy(data[8:10], "SO")
+	binary.LittleEndian.PutUint16(data[10:12], 36)
+	binary.LittleEndian.PutUint64(data[184:192], uint64(len(data)))
+	binary.LittleEndian.PutUint64(data[224:232], nbtOffset)
+	binary.LittleEndian.PutUint64(data[240:248], bbtOffset)
+
+	// A v36 BBT leaf has the familiar Unicode entries but its footer begins
+	// at byte 4072 and its B-tree header at byte 4056.
+	bbt := data[bbtOffset : bbtOffset+4096]
+	binary.LittleEndian.PutUint64(bbt[0:8], bid)
+	binary.LittleEndian.PutUint64(bbt[8:16], payloadOffset)
+	binary.LittleEndian.PutUint16(bbt[16:18], uint16(payloadSize))
+	binary.LittleEndian.PutUint16(bbt[4056:4058], 1)
+	binary.LittleEndian.PutUint16(bbt[4058:4060], 1)
+	bbt[4060], bbt[4061] = 24, 0
+	bbt[4072], bbt[4073] = 0x80, 0x80
+	binary.LittleEndian.PutUint32(bbt[4076:4080], disk.ComputeCRC(bbt[:4072]))
+	copy(data[payloadOffset:], compressed.Bytes())
+	binary.LittleEndian.PutUint16(data[payloadOffset+alignedSize+18:payloadOffset+alignedSize+20], uint16(len(plain)))
+
+	path := filepath.Join(t.TempDir(), "compressed-4k-smoke.ost")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHeader(path)
+	if h.PageSize != 4096 || h.BBTOffset != bbtOffset {
+		t.Fatalf("unexpected v36 smoke header: %+v", h)
+	}
+	var got bytes.Buffer
+	result, err := StreamIndexedPayload(path, h, int64(len(data)), bid, 8, uint64(len(plain)), func(chunk []byte) error {
+		_, err := got.Write(chunk)
+		return err
+	})
+	if err != nil || !bytes.Equal(got.Bytes(), plain) || result.BlocksRead != 1 || result.BytesProduced != uint64(len(plain)) {
+		t.Fatalf("unexpected v36 stream result: bytes=%d result=%+v err=%v", got.Len(), result, err)
+	}
+}
+
+// TestExternal4KOSTCorpusSmoke is deliberately opt-in: real Outlook files
+// are not committed to this repository. Set OSTOM_EXTERNAL_OST to a known
+// lawful test fixture to exercise the same public reader path used by a CLI.
+func TestExternal4KOSTCorpusSmoke(t *testing.T) {
+	path := os.Getenv("OSTOM_EXTERNAL_OST")
+	if path == "" {
+		t.Skip("set OSTOM_EXTERNAL_OST to run against an external corpus")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHeader(path)
+	if !h.OK || h.PageSize != 4096 {
+		t.Fatalf("external corpus is not a supported 4 KiB PFF: %+v", h)
+	}
+	t.Logf("external corpus header: NBT=0x%X BBT=0x%X declared=%d roots=%s", h.NBTOffset, h.BBTOffset, h.DeclaredSize, h.Roots)
+	nbt, bbt := WalkIndexTrees(path, h, info.Size(), 100000, 64)
+	if nbt.NodeRefs == 0 || bbt.BlockRefs == 0 || bbt.blockLocations == nil {
+		t.Fatalf("external corpus has no readable indexes: NBT=%+v BBT=%+v", nbt, bbt)
+	}
+	seen := make(map[uint64]bool)
+	for _, node := range nbt.nodeBIDs {
+		if node.dataBID == 0 || seen[node.dataBID] {
+			continue
+		}
+		seen[node.dataBID] = true
+		var streamed bytes.Buffer
+		result, err := StreamIndexedPayload(path, h, info.Size(), node.dataBID, 128, 1<<20, func(chunk []byte) error {
+			_, err := streamed.Write(chunk)
+			return err
+		})
+		if err == nil && result.BlocksRead > 0 && streamed.Len() > 0 {
+			return
+		}
+	}
+	t.Fatal("no indexed payload could be streamed from external 4 KiB corpus")
+}
+
+// TestExternal4KXBlockCorpusSmoke checks the next recovery boundary: an
+// internal XBLOCK/XXBLOCK must be able to stream its (possibly compressed)
+// external leaves without materializing the whole store.
+func TestExternal4KXBlockCorpusSmoke(t *testing.T) {
+	path := os.Getenv("OSTOM_EXTERNAL_OST")
+	if path == "" {
+		t.Skip("set OSTOM_EXTERNAL_OST to run against an external corpus")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHeader(path)
+	if !h.OK || h.PageSize != 4096 {
+		t.Skip("external corpus is not a supported 4 KiB PFF")
+	}
+	_, bbt := WalkIndexTrees(path, h, info.Size(), 100000, 64)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: info.Size(), method: h.CryptMethod, pageSize: h.PageSize}
+	candidates := 0
+	var lastErr error
+	for bid := range bbt.blockLocations {
+		if bid&0x2 == 0 {
+			continue
+		}
+		payload, err := source.Payload(bid)
+		if err != nil || len(payload) < 2 || payload[0] != 0x01 || (payload[1] != 1 && payload[1] != 2) {
+			continue
+		}
+		candidates++
+		var got bytes.Buffer
+		result, err := streamPayloadFromSource(source, bid, 256, 1<<20, func(chunk []byte) error {
+			_, err := got.Write(chunk)
+			return err
+		})
+		if err != nil {
+			lastErr = fmt.Errorf("BID 0x%X: %w", bid, err)
+			continue
+		}
+		if result.BlocksRead < 2 || got.Len() == 0 {
+			t.Fatalf("unexpected XBLOCK stream BID 0x%X: result=%+v bytes=%d", bid, result, got.Len())
+		}
+		return
+	}
+	if candidates > 0 {
+		t.Fatalf("no readable XBLOCK/XXBLOCK in external corpus (%d candidates, last error: %v)", candidates, lastErr)
+	}
+	t.Skip("external corpus contains no readable XBLOCK/XXBLOCK")
+}
+
+// TestExternal4KSubnodeCorpusSmoke exercises the NBT -> S(L/I)BLOCK -> leaf
+// data route used for attachment and recipient subnodes. It only claims a
+// readable subnode payload, not that the payload is a complete attachment.
+func TestExternal4KSubnodeCorpusSmoke(t *testing.T) {
+	path := os.Getenv("OSTOM_EXTERNAL_OST")
+	if path == "" {
+		t.Skip("set OSTOM_EXTERNAL_OST to run against an external corpus")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHeader(path)
+	if !h.OK || h.PageSize != 4096 {
+		t.Skip("external corpus is not a supported 4 KiB PFF")
+	}
+	nbt, _ := WalkIndexTrees(path, h, info.Size(), 100000, 64)
+	for _, node := range nbt.nodeBIDs {
+		if node.subnodeBID == 0 {
+			continue
+		}
+		payloads, tree, err := CollectIndexedSubnodePayloads(path, h, info.Size(), node.subnodeBID, 256, 1<<20)
+		if err != nil || tree.Entries == 0 || len(payloads) == 0 {
+			continue
+		}
+		t.Logf("read subnode root 0x%X: entries=%d payloads=%d", node.subnodeBID, tree.Entries, len(payloads))
+		return
+	}
+	t.Skip("external corpus contains no readable subnode payload")
+}
+
+// TestExternal4KNativeRecoverySmoke holds the full current native vertical
+// slice accountable on a real file: index traversal, decompression where
+// signalled, HN/PC parsing, and conservative candidate collection.
+func TestExternal4KNativeRecoverySmoke(t *testing.T) {
+	path := os.Getenv("OSTOM_EXTERNAL_OST")
+	if path == "" {
+		t.Skip("set OSTOM_EXTERNAL_OST to run against an external corpus")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHeader(path)
+	if !h.OK || h.PageSize != 4096 {
+		t.Skip("external corpus is not a supported 4 KiB PFF")
+	}
+	scan, err := CollectIndexedRecoveredMessages(path, h, info.Size(), 512, 256, 4<<20, 1024, 64, 1<<20, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan.Status != "completed" || scan.NodesAttempted == 0 {
+		t.Fatalf("native 4 KiB collection did not run: %+v", scan)
+	}
+	t.Logf("native 4 KiB candidates=%d attempted=%d errors=%d", len(scan.Messages), scan.NodesAttempted, scan.Errors)
 }
 
 func TestStreamPayloadFromSourceRejectsTreeDamage(t *testing.T) {
@@ -231,7 +509,7 @@ func TestCollectSubnodePayloadsFromSourceSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	added, err := collector.AddResolvedProperties(0x22, 0x200, []PropertyValue{{PropID: 0x0037, PropType: 0x001F, Data: []byte("subject")}})
+	added, err := collector.AddResolvedProperties(0x22, 0x200, []PropertyValue{{PropID: 0x001A, PropType: 0x001E, Data: []byte("IPM.Note")}, {PropID: 0x0037, PropType: 0x001E, Data: []byte("subject")}})
 	if err != nil || !added {
 		t.Fatalf("message candidate was not added: %v %v", added, err)
 	}
@@ -239,8 +517,36 @@ func TestCollectSubnodePayloadsFromSourceSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	message := collector.Messages()[0]
-	if len(message.Attachments) != 1 || string(message.Attachments[0].Data) != "attachment-payload" || message.Attachments[0].Incomplete {
+	if len(message.Attachments) != 1 || string(message.Attachments[0].Data) != "attachment-payload" || message.Attachments[0].Incomplete || message.Attachments[0].ReadableSize != int64(len("attachment-payload")) || message.Attachments[0].Status != "recovered" {
 		t.Fatalf("subnode attachment was not collected: %+v", message.Attachments)
+	}
+}
+
+func TestHasAttachmentPropertiesRequiresAttachmentEvidence(t *testing.T) {
+	if hasAttachmentProperties([]PropertyRecord{{PropID: 0x0037}, {PropID: 0x1000}}) {
+		t.Fatal("ordinary message properties were classified as attachment data")
+	}
+	for _, id := range []uint16{0x0E21, 0x3701, 0x3704, 0x3707, 0x370E} {
+		if !hasAttachmentProperties([]PropertyRecord{{PropID: id}}) {
+			t.Fatalf("attachment property 0x%04X was not recognized", id)
+		}
+	}
+}
+
+func TestRecoveredMessageCollectorRejectsNonMailClass(t *testing.T) {
+	collector, err := NewRecoveredMessageCollector(2, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := collector.AddResolvedProperties(1, 2, []PropertyValue{
+		{PropID: 0x001A, PropType: 0x001F, Data: []byte("IPM.Microsoft.WunderBar.Link")},
+		{PropID: 0x0037, PropType: 0x001F, Data: []byte("Sent Items")},
+	})
+	if err != nil || added {
+		t.Fatalf("non-mail class was recovered: added=%v err=%v", added, err)
+	}
+	if added, rejected, _, _ := collector.Stats(); added != 0 || rejected != 1 {
+		t.Fatalf("unexpected non-mail accounting: added=%d rejected=%d", added, rejected)
 	}
 }
 
@@ -479,14 +785,30 @@ func TestRecoveredMessageCollectorSmoke(t *testing.T) {
 	if err := collector.AddAttachmentProperties(0x200, 0x301, []PropertyValue{
 		{PropID: 0x3707, PropType: 0x001F, Data: []byte{'a', 0, '.', 0, 't', 0, 'x', 0, 't', 0, 0, 0}},
 		{PropID: 0x370E, PropType: 0x001F, Data: []byte{'t', 0, 'e', 0, 'x', 0, 't', 0, '/', 0, 'p', 0, 'l', 0, 'a', 0, 'i', 0, 'n', 0, 0, 0}},
+		{PropID: 0x3705, PropType: 0x0003, Data: []byte{1, 0, 0, 0}},
+		{PropID: 0x3712, PropType: 0x001F, Data: []byte{'c', 0, 'i', 0, 'd', 0, 0, 0}},
 		{PropID: 0x0E20, PropType: 0x0003, Data: []byte{3, 0, 0, 0}},
 		{PropID: 0x3701, PropType: 0x0102, Data: []byte("abc")},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	messages = collector.Messages()
-	if len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Name != "a.txt" || messages[0].Attachments[0].DeclaredSize != 3 || string(messages[0].Attachments[0].Data) != "abc" {
+	if len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Name != "a.txt" || messages[0].Attachments[0].DeclaredSize != 3 || messages[0].Attachments[0].ReadableSize != 3 || messages[0].Attachments[0].Status != "recovered" || messages[0].Attachments[0].Role != "inline" || messages[0].Attachments[0].AttachMethod != 1 || string(messages[0].Attachments[0].Data) != "abc" {
 		t.Fatalf("unexpected recovered attachment: %+v", messages[0].Attachments)
+	}
+	if err := collector.AddAttachmentProperties(0x200, 0x302, []PropertyValue{{PropID: 0x3707, PropType: 0x001F, Data: []byte("missing.bin")}}); err != nil {
+		t.Fatal(err)
+	}
+	messages = collector.Messages()
+	if len(messages[0].Attachments) != 2 || messages[0].Attachments[1].Status != "unavailable" || !messages[0].Attachments[1].Incomplete || messages[0].Attachments[1].ReadableSize != 0 {
+		t.Fatalf("missing attachment status was not preserved: %+v", messages[0].Attachments)
+	}
+	if err := collector.AddAttachmentPropertiesWithErrors(0x200, 0x303, []PropertyValue{{PropID: 0x3707, PropType: 0x001F, Data: []byte("damaged.bin")}}, []string{"property 0x3701 subnode NID 0x77 not found"}); err != nil {
+		t.Fatal(err)
+	}
+	messages = collector.Messages()
+	if got := messages[0].Attachments[2]; got.Status != "unavailable" || !got.Incomplete || len(got.Errors) != 2 || !strings.Contains(got.Errors[0], "0x3701") {
+		t.Fatalf("attachment resolution error was not retained: %+v", got)
 	}
 	if added, err := collector.AddResolvedProperties(0x22, 0x200, nil); err != nil || added {
 		t.Fatalf("duplicate BID was not suppressed: added=%v err=%v", added, err)
@@ -497,6 +819,46 @@ func TestRecoveredMessageCollectorSmoke(t *testing.T) {
 	addedCount, rejected, duplicates, limited := collector.Stats()
 	if addedCount != 1 || rejected != 1 || duplicates != 1 || limited {
 		t.Fatalf("unexpected collector stats: %d %d %d %v", addedCount, rejected, duplicates, limited)
+	}
+}
+
+func TestRecoveredAttachmentLimitIsIndependentOfBodyLimit(t *testing.T) {
+	collector, err := NewRecoveredMessageCollectorWithAttachmentLimit(1, 4, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := collector.AddResolvedProperties(0x22, 0x200, []PropertyValue{{PropID: 0x001A, PropType: 0x001F, Data: []byte{'I', 0, 'P', 0, 'M', 0, '.', 0, 'N', 0, 'o', 0, 't', 0, 'e', 0, 0, 0}}, {PropID: 0x1000, PropType: 0x0102, Data: []byte("123456")}})
+	if err != nil || !added {
+		t.Fatalf("message was not collected: added=%v err=%v", added, err)
+	}
+	if err := collector.AddAttachmentProperties(0x200, 0x301, []PropertyValue{{PropID: 0x3701, PropType: 0x0102, Data: []byte("12345678")}}); err != nil {
+		t.Fatal(err)
+	}
+	message := collector.Messages()[0]
+	if string(message.Body) != "1234" || !message.Incomplete {
+		t.Fatalf("body limit was not applied: %+v", message)
+	}
+	attachment := message.Attachments[0]
+	if string(attachment.Data) != "12345678" || attachment.Incomplete || attachment.Status != "recovered" {
+		t.Fatalf("attachment limit was incorrectly tied to body limit: %+v", attachment)
+	}
+}
+
+func TestRecoveredExternalAttachmentIsNotReportedAsMissingPayload(t *testing.T) {
+	collector, err := NewRecoveredMessageCollector(1, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := collector.AddResolvedProperties(0x22, 0x200, []PropertyValue{{PropID: 0x001A, PropType: 0x001F, Data: []byte{'I', 0, 'P', 0, 'M', 0, '.', 0, 'N', 0, 'o', 0, 't', 0, 'e', 0, 0, 0}}})
+	if err != nil || !added {
+		t.Fatalf("message was not collected: added=%v err=%v", added, err)
+	}
+	if err := collector.AddAttachmentProperties(0x200, 0x301, []PropertyValue{{PropID: 0x3705, PropType: 0x0003, Data: []byte{2, 0, 0, 0}}, {PropID: 0x3707, PropType: 0x001F, Data: []byte("reference.url")}}); err != nil {
+		t.Fatal(err)
+	}
+	attachment := collector.Messages()[0].Attachments[0]
+	if attachment.Role != "external" || attachment.Status != "external" || attachment.Incomplete || len(attachment.Errors) != 0 {
+		t.Fatalf("external attachment was treated as missing payload: %+v", attachment)
 	}
 }
 

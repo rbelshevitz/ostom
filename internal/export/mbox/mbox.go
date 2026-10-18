@@ -15,9 +15,11 @@ import (
 )
 
 type Attachment struct {
-	Name     string
-	MimeType string
-	Data     []byte
+	Name      string
+	MimeType  string
+	ContentID string
+	Inline    bool
+	Data      []byte
 }
 
 type Writer struct {
@@ -46,6 +48,10 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 	if len(folderPath) == 0 {
 		return fmt.Errorf("empty folder path")
 	}
+	msg, err := w.RenderWithSource(subject, from, to, cc, messageID, date, body, attachments, source)
+	if err != nil {
+		return err
+	}
 	path, err := w.folderFile(folderPath)
 	if err != nil {
 		return err
@@ -56,7 +62,6 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 	}
 	defer f.Close()
 
-	var msg bytes.Buffer
 	if from == "" {
 		from = "unknown"
 	}
@@ -65,6 +70,23 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 	}
 	if _, err := fmt.Fprintf(f, "From %s %s\r\n", from, date.Format("Mon Jan _2 15:04:05 2006")); err != nil {
 		return err
+	}
+	if err := writeEscapedMbox(f, msg); err != nil {
+		return err
+	}
+	_, err = f.WriteString("\r\n")
+	return err
+}
+
+// RenderWithSource creates a raw RFC 5322 message. It is shared by mbox and
+// per-message EML export so both recovery outputs carry identical MIME data.
+func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date time.Time, body string, attachments []Attachment, source string) ([]byte, error) {
+	var msg bytes.Buffer
+	if from == "" {
+		from = "unknown"
+	}
+	if date.IsZero() {
+		date = time.Unix(0, 0).UTC()
 	}
 	fmt.Fprintf(&msg, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	fmt.Fprintf(&msg, "From: %s\r\n", from)
@@ -101,10 +123,10 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 		textHeader.Set("Content-Type", "text/plain; charset=utf-8")
 		part, err := mw.CreatePart(textHeader)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := part.Write([]byte(body)); err != nil {
-			return err
+			return nil, err
 		}
 		for _, attachment := range usable {
 			h := make(textproto.MIMEHeader)
@@ -113,10 +135,15 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 				contentType = "application/octet-stream"
 			}
 			h.Set("Content-Type", contentType)
-			h.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", attachment.Name))
+			if attachment.Inline || attachment.ContentID != "" {
+				h.Set("Content-ID", "<"+strings.Trim(attachment.ContentID, "<>")+">")
+				h.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", attachment.Name))
+			} else {
+				h.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", attachment.Name))
+			}
 			part, err := mw.CreatePart(h)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			encoded := make([]byte, base64.StdEncoding.EncodedLen(len(attachment.Data)))
 			base64.StdEncoding.Encode(encoded, attachment.Data)
@@ -130,17 +157,13 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 			}
 		}
 		if err := mw.Close(); err != nil {
-			return err
+			return nil, err
 		}
 		fmt.Fprintf(&msg, "Content-Type: multipart/mixed; boundary=%q\r\n\r\n", mw.Boundary())
 		msg.Write(multipartBody.Bytes())
 	}
 
-	if err := writeEscapedMbox(f, msg.Bytes()); err != nil {
-		return err
-	}
-	_, err = f.WriteString("\r\n")
-	return err
+	return msg.Bytes(), nil
 }
 
 func (w *Writer) folderFile(parts []string) (string, error) {

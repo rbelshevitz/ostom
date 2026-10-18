@@ -105,8 +105,44 @@ OSTOM preserves the folder hierarchy for readable indexed content and exports
 as much recoverable mail and attachment data as the file still exposes. A bad
 message or attachment should not discard the readable remainder. Damaged or
 orphaned items may be incomplete, duplicated, missing their original folder
-path, or placed in the separate `OSTOM Recovered` folder. The normal indexed
-export and the extended recovery export are intentionally kept distinguishable.
+path, or placed in the separate `OSTOM Native Recovered` folder. The normal
+indexed export and the bounded native recovery export are intentionally kept
+distinguishable.
+
+Indexed messages use the reader's attachment table and stream readable
+attachment bytes into MIME output. The bounded native path can also associate
+explicit attachment subnodes with a recovered message and preserves filename,
+declared/readable size, `Content-ID`, and the regular/inline/embedded/external
+role when those properties are readable. Native attachment payloads are still
+memory-bounded (32 MiB by the CLI default), and arbitrary attachment-stream
+trees, complete attachment-table recovery, and 4 KiB payload variants are not
+yet supported. A native attachment marked `partial` or `unavailable` is not a
+claim that the original file is absent.
+
+### Attachment recovery: guarantees, limits, and research
+
+**What OSTOM currently guarantees.** It never modifies or uploads the source
+file. For an indexed message and attachment that its reader can open, OSTOM
+streams the attachment into that message's MIME/mbox export and continues with
+other messages after an individual failure. The indexed folder hierarchy is
+preserved. For a native candidate, OSTOM records an attachment only when the
+subnode has explicit attachment-property evidence; it keeps the association to
+that candidate's message BID/NID instead of guessing from a filename.
+
+**What the result does not prove.** A successful export proves only that the
+bytes read by this run were written to its output. It does not prove that a
+server lacks a copy, that a native candidate has its original folder, or that
+two recovered items are distinct. `partial` means some readable result exists
+but a limit or read error affected it. `unavailable` means this run could not
+read a payload; it is not proof that the payload never existed. Native
+candidate attachments can be incomplete or duplicated.
+
+**Still under investigation.** Arbitrary attachment-stream trees (including
+XBLOCK/XXBLOCK/SLBLOCK and 4 KiB variants), complete recovery of damaged
+attachment tables, embedded-message extraction as a separate `.eml`, and
+semantics of external references require real Outlook samples and dedicated
+fixtures before support can be claimed. The current native attachment path is
+a bounded salvage aid, not a replacement for a complete PFF attachment reader.
 
 ## Current status
 
@@ -141,7 +177,10 @@ Export readable indexed mail into a Thunderbird-compatible tree:
 .\ostom.exe --export-dir E:\recovered source-copy.ost
 ```
 
-The export directory contains `Local Folders` mbox files. In Thunderbird,
+The export directory contains `Local Folders` mbox files and an `OSTOM EML`
+tree with one raw RFC 5322 fallback file per readable indexed message. Its
+names include the folder path, export index, and source message identifier to
+avoid collisions. In Thunderbird,
 close the application, copy that `Local Folders` directory into the profile's
 `Mail` directory, then start Thunderbird and let it rebuild folder indexes.
 Keep the generated export as a backup until the messages and attachments have
@@ -186,15 +225,10 @@ dependency's lenient recovery parser for export. The report marks this as
 `recovery_mode`; unreadable messages and attachments are still reported rather
 than presented as successfully recovered.
 
-The same command also writes messages found by the all-node recovery iterator
-to `Local Folders\OSTOM Recovered`. This is deliberately a separate mbox:
-recovered items may lack a reliable original folder and may duplicate an
-indexed export. Their source node is recorded in `X-Ostom-Source`.
-
 Native candidates collected from indexed NBT/PC structures are written to a
 separate `Local Folders\OSTOM Native Recovered` folder and marked with
 `X-Ostom-Source: native-recovered`. The JSON and human-readable report keep
-native collection and export counts separate from the external recovery probe.
+native collection and export counts separate from the lenient indexed export.
 
 Use `--output-dir` during inspection to check the destination volume before recovery:
 
@@ -210,7 +244,10 @@ For a slower best-effort node recovery probe:
 ostom --recovery-scan --output-dir E:\recovered file.ost
 ```
 
-This uses the separate `go-pst` recovery backend and reports attempted, successful, failed, orphan, and error-category counts. It still does not write output; extraction is the next stage.
+This enables lenient indexed export when an export directory is supplied and
+runs OSTOM's bounded native collector. Without an export directory it reports
+native collection evidence only; with one, native candidates are written to
+their separate `OSTOM Native Recovered` folder.
 
 The CLI runs the parser in a supervised worker process on Windows. By default,
 the worker is terminated after 10 minutes without a heartbeat from message
@@ -267,6 +304,10 @@ ostom --export-dir E:\recovered file.ost
 ```
 
 Attachments are associated through the message attachment table and copied through `go-pst`'s streaming attachment writer. Inline attachments retain `Content-ID` when available. The exporter writes no `.msf` files.
+
+The same export also creates `OSTOM EML`, a safe per-message fallback tree for
+readable indexed messages. EML files are streamed alongside mbox output and
+are atomically finalized only after the complete message has been read.
 
 An empty mbox file is not automatically an export failure: OSTOM creates one
 for every readable source folder so Thunderbird can preserve the hierarchy.

@@ -4,6 +4,8 @@
 package format
 
 import (
+	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -152,7 +154,7 @@ type AssemblyResult struct {
 // The writer receives logical payload bytes only; block headers, padding, and
 // trailers are never exposed.
 func StreamIndexedPayload(name string, h Header, fileSize int64, bid uint64, maxBlocks int, maxBytes uint64, write func([]byte) error) (AssemblyResult, error) {
-	if h.PageSize != 512 {
+	if h.PageSize != 512 && h.PageSize != 4096 {
 		return AssemblyResult{}, fmt.Errorf("payload streaming for page size %d is not implemented", h.PageSize)
 	}
 	if maxBlocks <= 0 || maxBytes == 0 {
@@ -167,7 +169,7 @@ func StreamIndexedPayload(name string, h Header, fileSize int64, bid uint64, max
 		return AssemblyResult{}, err
 	}
 	defer f.Close()
-	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod}
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
 	return streamPayloadFromSource(source, bid, maxBlocks, maxBytes, write)
 }
 
@@ -322,7 +324,7 @@ func CollectIndexedSubnodePayloads(name string, h Header, fileSize int64, rootBI
 		return map[uint64][]byte{}, tree, err
 	}
 	defer f.Close()
-	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod}
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
 	return collectSubnodePayloadsFromSource(source, entries, maxBlocks, maxBytes), tree, nil
 }
 
@@ -357,11 +359,18 @@ func CollectIndexedRecoveredMessages(name string, h Header, fileSize int64, maxN
 // CollectIndexedRecoveredMessagesWithProgress is the progress-reporting form
 // used by the CLI. total is the bounded number of unique NBT data candidates.
 func CollectIndexedRecoveredMessagesWithProgress(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples int, progress func(done, total int)) (IndexedRecoveredMessageScan, error) {
+	return CollectIndexedRecoveredMessagesWithAttachmentLimit(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxBodyBytes, maxErrorSamples, progress)
+}
+
+// CollectIndexedRecoveredMessagesWithAttachmentLimit uses a separate bounded
+// cap for attachment payloads. It preserves the legacy entry point for
+// callers that intentionally want one shared cap.
+func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples int, progress func(done, total int)) (IndexedRecoveredMessageScan, error) {
 	scan := IndexedRecoveredMessageScan{Status: "not applicable"}
-	if maxNodes <= 0 || maxBlocks <= 0 || maxBytes == 0 || maxRecords <= 0 || maxMessages <= 0 || maxBodyBytes <= 0 || maxErrorSamples < 0 {
+	if maxNodes <= 0 || maxBlocks <= 0 || maxBytes == 0 || maxRecords <= 0 || maxMessages <= 0 || maxBodyBytes <= 0 || maxAttachmentBytes <= 0 || maxErrorSamples < 0 {
 		return scan, fmt.Errorf("native recovery limits must be positive")
 	}
-	collector, err := NewRecoveredMessageCollector(maxMessages, maxBodyBytes)
+	collector, err := NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, maxAttachmentBytes)
 	if err != nil {
 		return scan, err
 	}
@@ -399,8 +408,13 @@ func CollectIndexedRecoveredMessagesWithProgress(name string, h Header, fileSize
 			progress(scan.NodesAttempted, total)
 		}
 		var subnodes map[uint64][]byte
+		var subnodeEntries map[uint64]SubnodeTreeEntry
 		if node.subnodeBID != 0 {
 			var subnodeErr error
+			subnodeEntries, _, subnodeErr = WalkIndexedSubnodeTree(name, h, fileSize, node.subnodeBID, maxBlocks)
+			if subnodeErr != nil {
+				scan.addError(fmt.Errorf("NID 0x%X subnode tree: %w", node.nid, subnodeErr), maxErrorSamples)
+			}
 			subnodes, _, subnodeErr = CollectIndexedSubnodePayloads(name, h, fileSize, node.subnodeBID, maxBlocks, maxBytes)
 			if subnodeErr != nil {
 				scan.addError(fmt.Errorf("NID 0x%X subnodes: %w", node.nid, subnodeErr), maxErrorSamples)
@@ -414,9 +428,27 @@ func CollectIndexedRecoveredMessagesWithProgress(name string, h Header, fileSize
 		for _, resolutionErr := range result.ResolutionErrors {
 			scan.addError(fmt.Errorf("NID 0x%X BID 0x%X: %s", node.nid, node.dataBID, resolutionErr), maxErrorSamples)
 		}
-		_, addErr := collector.AddResolvedProperties(node.nid, node.dataBID, result.ResolvedProperties)
+		added, addErr := collector.AddResolvedProperties(node.nid, node.dataBID, result.ResolvedProperties)
 		if addErr != nil {
 			scan.addError(addErr, maxErrorSamples)
+		}
+		if !added {
+			continue
+		}
+		for attachmentNID, entry := range subnodeEntries {
+			if entry.DataBID == 0 {
+				continue
+			}
+			attachment, attachmentErr := ParseIndexedPropertyContextWithSubnodes(name, h, fileSize, entry.DataBID, maxBlocks, maxBytes, maxRecords, subnodes)
+			if attachmentErr != nil || !hasAttachmentProperties(attachment.Properties) {
+				continue
+			}
+			if err := collector.AddAttachmentPropertiesWithErrors(node.dataBID, attachmentNID, attachment.ResolvedProperties, attachment.ResolutionErrors); err != nil {
+				scan.addError(err, maxErrorSamples)
+			}
+			for _, resolutionErr := range attachment.ResolutionErrors {
+				scan.addError(fmt.Errorf("NID 0x%X attachment 0x%X: %s", node.nid, attachmentNID, resolutionErr), maxErrorSamples)
+			}
 		}
 	}
 	scan.Messages = collector.Messages()
@@ -428,6 +460,23 @@ func CollectIndexedRecoveredMessagesWithProgress(name string, h Header, fileSize
 	}
 	scan.Status = "completed"
 	return scan, nil
+}
+
+// hasAttachmentProperties requires explicit attachment MAPI evidence before a
+// subnode is attached to a recovered message. Recipient and embedded-message
+// subnodes are deliberately left alone until their own recovery paths exist.
+func hasAttachmentProperties(properties []PropertyRecord) bool {
+	for _, property := range properties {
+		switch property.PropID {
+		case 0x0E21, // PidTagAttachNumber
+			0x3701, // PidTagAttachDataBinary
+			0x3704, // PidTagAttachFilename
+			0x3707, // PidTagAttachLongFilename
+			0x370E: // PidTagAttachMimeTag
+			return true
+		}
+	}
+	return false
 }
 
 func (s *IndexedRecoveredMessageScan) addError(err error, maxSamples int) {
@@ -449,6 +498,7 @@ type indexedPayloadSource struct {
 	locations map[uint64]blockLocation
 	fileSize  int64
 	method    disk.CryptMethod
+	pageSize  int
 }
 
 func (s indexedPayloadSource) Payload(bid uint64) ([]byte, error) {
@@ -456,8 +506,9 @@ func (s indexedPayloadSource) Payload(bid uint64) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("BID 0x%X not found in BBT", bid)
 	}
-	aligned := (uint64(location.size) + 63) &^ 63
-	total := aligned + 16
+	alignment, trailerSize := blockLayout(s.pageSize)
+	aligned := (uint64(location.size) + alignment - 1) &^ (alignment - 1)
+	total := aligned + trailerSize
 	if location.offset+total < location.offset || location.offset+total > uint64(s.fileSize) {
 		return nil, fmt.Errorf("BID 0x%X block exceeds file", bid)
 	}
@@ -465,7 +516,43 @@ func (s indexedPayloadSource) Payload(bid uint64) ([]byte, error) {
 	if _, err := s.file.ReadAt(data, int64(location.offset)); err != nil {
 		return nil, err
 	}
-	return decodeBlockPayload(data[:location.size], bid, s.method), nil
+	payload := decodeBlockPayload(data[:location.size], bid, s.method)
+	if s.pageSize == 4096 && bid&0x2 == 0 {
+		// The 4 KiB OST footer records the logical size. A larger value means
+		// this external block is a raw RFC 1951 stream; internal X/SL blocks
+		// themselves are never compressed.
+		uncompressedSize := binary.LittleEndian.Uint16(data[aligned+18 : aligned+20])
+		if uncompressedSize > uint16(len(payload)) {
+			return inflatePFFBlock(payload, int(uncompressedSize))
+		}
+	}
+	return payload, nil
+}
+
+func blockLayout(pageSize int) (alignment, trailerSize uint64) {
+	if pageSize == 4096 {
+		return 512, 24
+	}
+	return 64, 16
+}
+
+// inflatePFFBlock decodes the raw DEFLATE form used by compressed 4 KiB OST
+// data blocks. The footer is both the expected size and a hard allocation
+// limit, so corrupt compressed input cannot grow without bound.
+func inflatePFFBlock(compressed []byte, expectedSize int) ([]byte, error) {
+	if expectedSize <= 0 || expectedSize > 64<<10 {
+		return nil, fmt.Errorf("invalid 4 KiB block uncompressed size %d", expectedSize)
+	}
+	r := flate.NewReader(bytes.NewReader(compressed))
+	defer r.Close()
+	decoded, err := io.ReadAll(io.LimitReader(r, int64(expectedSize)+1))
+	if err != nil {
+		return nil, fmt.Errorf("inflate 4 KiB block: %w", err)
+	}
+	if len(decoded) != expectedSize {
+		return nil, fmt.Errorf("4 KiB block inflated to %d bytes, footer declares %d", len(decoded), expectedSize)
+	}
+	return decoded, nil
 }
 
 func streamPayloadFromSource(source payloadSource, bid uint64, maxBlocks int, maxBytes uint64, write func([]byte) error) (AssemblyResult, error) {
@@ -639,7 +726,7 @@ func parseSubnodeBlockBounded(payload []byte) (*disk.SubnodeBlock, error) {
 func WalkIndexedSubnodeTree(name string, h Header, fileSize int64, rootBID uint64, maxBlocks int) (map[uint64]SubnodeTreeEntry, SubnodeTreeResult, error) {
 	entries := make(map[uint64]SubnodeTreeEntry)
 	result := SubnodeTreeResult{}
-	if h.PageSize != 512 {
+	if h.PageSize != 512 && h.PageSize != 4096 {
 		return entries, result, fmt.Errorf("subnode tree walk for page size %d is not implemented", h.PageSize)
 	}
 	if rootBID == 0 || maxBlocks <= 0 {
@@ -657,7 +744,7 @@ func WalkIndexedSubnodeTree(name string, h Header, fileSize int64, rootBID uint6
 		return entries, result, err
 	}
 	defer f.Close()
-	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod}
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
 	return walkSubnodeTreeFromSource(source, rootBID, maxBlocks)
 }
 
@@ -985,7 +1072,11 @@ type RecoveredAttachment struct {
 	Name         string   `json:"name,omitempty"`
 	MimeType     string   `json:"mime_type,omitempty"`
 	ContentID    string   `json:"content_id,omitempty"`
+	Role         string   `json:"role"`
+	AttachMethod uint32   `json:"attach_method,omitempty"`
 	DeclaredSize int64    `json:"declared_size,omitempty"`
+	ReadableSize int64    `json:"readable_size"`
+	Status       string   `json:"status"`
 	Data         []byte   `json:"-"`
 	Inline       bool     `json:"inline"`
 	Incomplete   bool     `json:"incomplete"`
@@ -995,24 +1086,34 @@ type RecoveredAttachment struct {
 // RecoveredMessageCollector turns resolved native properties into bounded
 // message records. It is independent of mbox/MIME writing.
 type RecoveredMessageCollector struct {
-	maxMessages int
-	maxBody     int
-	messages    []RecoveredMessage
-	seen        map[uint64]bool
-	duplicates  int
-	rejected    int
-	limited     bool
+	maxMessages   int
+	maxBody       int
+	maxAttachment int
+	messages      []RecoveredMessage
+	seen          map[uint64]bool
+	duplicates    int
+	rejected      int
+	limited       bool
 }
 
 func NewRecoveredMessageCollector(maxMessages, maxBodyBytes int) (*RecoveredMessageCollector, error) {
-	if maxMessages <= 0 || maxBodyBytes <= 0 {
+	return NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, maxBodyBytes)
+}
+
+// NewRecoveredMessageCollectorWithAttachmentLimit keeps message-body and
+// attachment limits independent. Attachments are commonly much larger than a
+// useful preview body, so sharing the body cap silently discarded otherwise
+// readable files during native recovery.
+func NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, maxAttachmentBytes int) (*RecoveredMessageCollector, error) {
+	if maxMessages <= 0 || maxBodyBytes <= 0 || maxAttachmentBytes <= 0 {
 		return nil, fmt.Errorf("recovered message limits must be positive")
 	}
 	return &RecoveredMessageCollector{
-		maxMessages: maxMessages,
-		maxBody:     maxBodyBytes,
-		messages:    make([]RecoveredMessage, 0, maxMessages),
-		seen:        make(map[uint64]bool),
+		maxMessages:   maxMessages,
+		maxBody:       maxBodyBytes,
+		maxAttachment: maxAttachmentBytes,
+		messages:      make([]RecoveredMessage, 0, maxMessages),
+		seen:          make(map[uint64]bool),
 	}, nil
 }
 
@@ -1073,7 +1174,7 @@ func (c *RecoveredMessageCollector) AddResolvedProperties(nid, bid uint64, value
 	} else if message.Sender == "" {
 		message.Sender = senderEmail
 	}
-	if message.MessageClass == "" && message.Subject == "" && len(message.Body) == 0 {
+	if !isRecoverableMailClass(message.MessageClass) {
 		c.rejected++
 		return false, nil
 	}
@@ -1081,9 +1182,26 @@ func (c *RecoveredMessageCollector) AddResolvedProperties(nid, bid uint64, value
 	return true, nil
 }
 
+// isRecoverableMailClass keeps native salvage conservative. A subject alone
+// is not enough: folders and Outlook service nodes also carry one. Additional
+// item types need their own exporter rather than being mislabeled as email.
+func isRecoverableMailClass(class string) bool {
+	class = strings.ToUpper(strings.TrimSpace(class))
+	return strings.HasPrefix(class, "IPM.NOTE") ||
+		strings.HasPrefix(class, "REPORT.IPM.NOTE") ||
+		strings.HasPrefix(class, "IPM.SCHEDULE")
+}
+
 // AddAttachmentProperties attaches one resolved attachment property set to a
 // collected message. A missing payload is retained as incomplete metadata.
 func (c *RecoveredMessageCollector) AddAttachmentProperties(messageBID, attachmentNID uint64, values []PropertyValue) error {
+	return c.AddAttachmentPropertiesWithErrors(messageBID, attachmentNID, values, nil)
+}
+
+// AddAttachmentPropertiesWithErrors retains property-resolution evidence on
+// the attachment itself. A damaged payload must not be reported merely as a
+// generic scan error: callers need to know which message lost which file.
+func (c *RecoveredMessageCollector) AddAttachmentPropertiesWithErrors(messageBID, attachmentNID uint64, values []PropertyValue, resolutionErrors []string) error {
 	if c == nil {
 		return fmt.Errorf("recovered message collector is nil")
 	}
@@ -1092,6 +1210,10 @@ func (c *RecoveredMessageCollector) AddAttachmentProperties(messageBID, attachme
 			continue
 		}
 		attachment := RecoveredAttachment{NID: attachmentNID}
+		attachment.Errors = append(attachment.Errors, resolutionErrors...)
+		if len(resolutionErrors) > 0 {
+			attachment.Incomplete = true
+		}
 		for _, value := range values {
 			switch value.PropID {
 			case 0x3707: // PidTagAttachLongFilename
@@ -1105,13 +1227,17 @@ func (c *RecoveredMessageCollector) AddAttachmentProperties(messageBID, attachme
 			case 0x3712: // PidTagAttachContentId
 				attachment.ContentID = decodePropertyText(value)
 				attachment.Inline = attachment.ContentID != ""
+			case 0x3705: // PidTagAttachMethod
+				if method, ok := decodeUint64(value.Data); ok {
+					attachment.AttachMethod = uint32(method)
+				}
 			case 0x0E20: // PidTagAttachSize
 				if size, ok := decodeUint64(value.Data); ok {
 					attachment.DeclaredSize = int64(size)
 				}
 			case 0x3701: // PidTagAttachDataBinary
-				if len(value.Data) > c.maxBody {
-					attachment.Data = append([]byte(nil), value.Data[:c.maxBody]...)
+				if len(value.Data) > c.maxAttachment {
+					attachment.Data = append([]byte(nil), value.Data[:c.maxAttachment]...)
 					attachment.Incomplete = true
 					attachment.Errors = append(attachment.Errors, "attachment payload truncated by collector limit")
 				} else {
@@ -1122,18 +1248,44 @@ func (c *RecoveredMessageCollector) AddAttachmentProperties(messageBID, attachme
 		if attachment.Name == "" {
 			attachment.Name = fmt.Sprintf("attachment-%X", attachmentNID)
 		}
+		attachment.Role = attachmentRole(attachment.AttachMethod, attachment.Inline)
 		if attachment.DeclaredSize > int64(len(attachment.Data)) {
 			attachment.Incomplete = true
 			attachment.Errors = append(attachment.Errors, "declared attachment size exceeds readable bytes")
 		}
-		if attachment.DeclaredSize == 0 && len(attachment.Data) == 0 {
+		if attachment.Role != "external" && attachment.DeclaredSize == 0 && len(attachment.Data) == 0 {
 			attachment.Incomplete = true
 			attachment.Errors = append(attachment.Errors, "attachment payload unavailable")
+		}
+		attachment.ReadableSize = int64(len(attachment.Data))
+		switch {
+		case attachment.Role == "external" && attachment.ReadableSize == 0 && !attachment.Incomplete:
+			attachment.Status = "external"
+		case attachment.ReadableSize == 0:
+			attachment.Status = "unavailable"
+		case attachment.Incomplete:
+			attachment.Status = "partial"
+		default:
+			attachment.Status = "recovered"
 		}
 		c.messages[index].Attachments = append(c.messages[index].Attachments, attachment)
 		return nil
 	}
 	return fmt.Errorf("message BID 0x%X not found for attachment NID 0x%X", messageBID, attachmentNID)
+}
+
+func attachmentRole(method uint32, inline bool) string {
+	if inline {
+		return "inline"
+	}
+	switch method {
+	case 2, 3, 4:
+		return "external"
+	case 5:
+		return "embedded"
+	default:
+		return "regular"
+	}
 }
 
 func (c *RecoveredMessageCollector) Messages() []RecoveredMessage {
@@ -2041,7 +2193,7 @@ func validateIndexRoot(f *os.File, offset uint64, pageSize int, fileSize int64, 
 	if page[dataEnd] != expectedType || page[dataEnd] != page[dataEnd+1] {
 		return "wrong page type", 0, 0, 0, 0, 0, 0
 	}
-	entries, maxEntries, entrySize, level := int(page[header]), int(page[header+1]), int(page[header+2]), int(page[header+3])
+	entries, maxEntries, entrySize, level := indexPageHeader(page, pageSize, header)
 	if entries > maxEntries || maxEntries == 0 || entrySize == 0 {
 		return "invalid B-tree header", entries, maxEntries, entrySize, level, 0, 0
 	}
@@ -2374,8 +2526,7 @@ func readIndexPage(f *os.File, offset uint64, pageSize int, fileSize int64, expe
 	if page[dataEnd] != expectedType || page[dataEnd] != page[dataEnd+1] {
 		return indexPage{}, false
 	}
-	entries, maxEntries := int(page[headerOffset]), int(page[headerOffset+1])
-	entrySize, level := int(page[headerOffset+2]), int(page[headerOffset+3])
+	entries, maxEntries, entrySize, level := indexPageHeader(page, pageSize, headerOffset)
 	if entries > maxEntries || maxEntries == 0 || entrySize == 0 || entries*entrySize > headerOffset {
 		return indexPage{}, false
 	}
@@ -2422,4 +2573,16 @@ func readIndexPage(f *os.File, offset uint64, pageSize int, fileSize int64, expe
 		}
 	}
 	return result, true
+}
+
+// indexPageHeader decodes the B-tree header. The v36 4 KiB layout widens the
+// entry count and maximum to uint16 and moves cbEnt/bLevel accordingly; the
+// entry records themselves retain the Unicode layout.
+func indexPageHeader(page []byte, pageSize, offset int) (entries, maxEntries, entrySize, level int) {
+	if pageSize == 4096 {
+		return int(binary.LittleEndian.Uint16(page[offset : offset+2])),
+			int(binary.LittleEndian.Uint16(page[offset+2 : offset+4])),
+			int(page[offset+4]), int(page[offset+5])
+	}
+	return int(page[offset]), int(page[offset+1]), int(page[offset+2]), int(page[offset+3])
 }

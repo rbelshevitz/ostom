@@ -65,19 +65,39 @@ bounds, and a guarded walk through root-connected NBT/BBT pages. For Unicode
 BBT leaves it also extracts `IB`/`CB` block references and checks whether their
 physical ranges fit inside the file.
 
-This scan does not yet decode every block or decompress every 4 KiB data block.
-For that reason, a CRC mismatch from a third-party corpus is recorded as a
-warning for further investigation; by itself it is not treated as proof that
-the file is corrupt until the algorithm and page variant are independently
-confirmed.
+The bounded payload path can now stream XBLOCK/XXBLOCK leaves and subnode
+trees for ordinary and 4 KiB index pages. For an external 4 KiB data block it
+uses the declared uncompressed length in the block footer as a strict bound and
+attempts raw DEFLATE only when that length exceeds the stored size. This is a
+native, read-only implementation; it is still awaiting validation against a
+genuine Outlook sample. A CRC mismatch from a third-party corpus remains a
+warning for further investigation, not proof that the file is corrupt.
 
 ## Important OST variant: 4 KiB pages and compressed blocks
 
 The ordinary 512-byte-page and Unicode PFF layouts are not the whole OST landscape. Independent format research and the libpff implementation document an Outlook 2013-era 64-bit OST variant with 4096-byte pages. Its data blocks can contain raw DEFLATE/RFC 1951 payloads; the size in the offset index is then the compressed size, while the block footer carries the uncompressed size. The same research describes distinct 4 KiB B-tree page and block footers.
 
-This matters operationally: a parser that recognizes the `SO` OST signature but only understands the 512-byte/ordinary Unicode layout may produce a false “corrupt” diagnosis. OSTOM must therefore report the detected format variant and distinguish “unsupported variant” from “confirmed damaged.” The current Go reader path is not yet proven against a genuine compressed 4 KiB OST; the synthetic `.ost` fixture is only a parser-validated PFF sample and does not exercise this variant.
+This matters operationally: a parser that recognizes the `SO` OST signature but only understands the 512-byte/ordinary Unicode layout may produce a false “corrupt” diagnosis. OSTOM must therefore report the detected format variant and distinguish “unsupported variant” from “confirmed damaged.” The Go reader now has a bounded raw-DEFLATE path for footer-signalled 4 KiB external blocks, but is not yet proven against a genuine compressed 4 KiB OST; the synthetic `.ost` fixture does not exercise this variant.
 
 `libpff` is the strongest recovery reference found so far: it explicitly lists 64-bit 4 KiB compressed OST support, item recovery, corruption tolerance, and test profiles. It is licensed LGPL-3.0-or-later, so it should be an optional external backend or a separately reviewed component, not copied into the MIT core blindly. OSTOM should use it as a behavioural oracle and fallback candidate while keeping the Go-native path independently tested.
+
+### External 4 KiB compatibility smoke
+
+Real mail stores are not committed to this repository. The opt-in
+`TestExternal4KOSTCorpusSmoke` test accepts `OSTOM_EXTERNAL_OST` and exercises
+the public indexed streaming path. Its first independently downloaded corpus
+is [`example-2013.ost` from freepst](https://raw.githubusercontent.com/hrbrmstr/freepst/master/inst/extdata/example-2013.ost), an Apache-2.0 project fixture whose README identifies Inbox and Sent Items messages. The observed SHA-256 on 2026-10-18 was
+`b18ff390d0c22273029ee580ab6025976af69a4f84e276d1b1c01a988650853d`.
+
+It proves that the 4 KiB index header and at least one indexed payload can be
+read. It does **not** contain a readable XBLOCK/XXBLOCK in the bounded walk,
+and therefore does not yet validate a compressed payload tree or attachments.
+Run it explicitly after independently checking the download and its licence:
+
+```sh
+OSTOM_EXTERNAL_OST=/path/to/example-2013.ost go test ./internal/format \
+  -run 'TestExternal4K.*CorpusSmoke' -v
+```
 
 ## Recovery strategy
 

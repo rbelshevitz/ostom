@@ -8,6 +8,8 @@ third_party/outlook-pst-go/sample.pst
 ostom.exe
 ostom-fixture.exe
 ostom
+!cmd/ostom/
+!cmd/ostom/main.go
 *.test
 *.prof
 coverage.out
