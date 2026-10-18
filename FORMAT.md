@@ -41,7 +41,7 @@ At higher layers, folder hierarchy tables point to child folders and contents ta
 
 ### PFF block encoding
 
-The header `bCryptMethod` describes the PFF block encoding: `0` (`None`), `1` (`Permute`), or `2` (`Cyclic`). These are reversible format encodings, not a password-encryption layer. OSTOM validates trailers against the on-disk bytes, then decodes external data blocks in memory before recognizing XBLOCK/heap payloads. Unknown methods are reported as unsupported rather than guessed.
+The header `bCryptMethod` describes the PFF block encoding: `0` (`None`), `1` (`Permute`), or `2` (`Cyclic`). These are reversible format encodings, not a user password or modern disk encryption. OSTOM decodes supported block encodings in memory; it does not write a decrypted copy or bypass account, DPAPI, EFS, or BitLocker protections. Unknown methods are reported rather than guessed.
 
 ## Reading diagnostic results
 
@@ -55,6 +55,24 @@ OSTOM should report these levels separately. Being able to open the root only
 shows that the first part of the store is readable; it does not confirm that
 all messages and attachments are intact.
 
+Outlook behaviour is useful context, but is not a direct integrity test. Safe
+Mode disables COM add-ins and Exchange client extensions; if Outlook works only
+there, an add-in may be involved. For Cached Exchange Mode, Microsoft documents
+rebuilding an OST, but that should not be the first step when local-only
+folders may contain data absent from the server. See Microsoft's [Sync
+Monitor](https://learn.microsoft.com/en-us/microsoft-365-apps/outlook/configuration/sync-monitor-improvements),
+[Outlook performance troubleshooting](https://support.microsoft.com/en-us/outlook/how-to-troubleshoot-performance-issues-in-outlook),
+and [synchronization guidance](https://learn.microsoft.com/en-us/troubleshoot/outlook/synchronization/synchronization-issues-occur-in-outlook-owa).
+
+The report's `deep_recovery` plan is evidence-based. `required` is used when a
+lower layer is inaccessible (for example, invalid header/size, missing roots,
+or index-access failure), or when the normal walk finds no messages despite
+declared content. `recommended` requires stronger accumulated evidence, such
+as multiple payload read/decode failures, missing NBT-to-BBT links, or a
+substantial share of message errors. A lone parser error, allocation-map
+anomaly, or advisory trailer/CRC mismatch does not trigger escalation alone.
+The scan remains explicit because it can take a long time.
+
 ## What the current structural scan checks
 
 Before the message walk, the current Go implementation performs a bounded,
@@ -65,39 +83,57 @@ bounds, and a guarded walk through root-connected NBT/BBT pages. For Unicode
 BBT leaves it also extracts `IB`/`CB` block references and checks whether their
 physical ranges fit inside the file.
 
-The bounded payload path can now stream XBLOCK/XXBLOCK leaves and subnode
-trees for ordinary and 4 KiB index pages. For an external 4 KiB data block it
-uses the declared uncompressed length in the block footer as a strict bound and
-attempts raw DEFLATE only when that length exceeds the stored size. This is a
-native, read-only implementation; it is still awaiting validation against a
-genuine Outlook sample. A CRC mismatch from a third-party corpus remains a
-warning for further investigation, not proof that the file is corrupt.
+Indexed reading handles 4 KiB B-tree pages and compressed blocks. The BBT
+provides stored and inflated block lengths; inflation is bounded by the
+declared length and checked for an exact match. A public OST sample smoke
+exported 12 messages and 4 attachments without failures. This validates the
+indexed path on one sample, not every 4 KiB block, compression, encryption, or
+native/orphan attachment-tree variant. CRC mismatches remain diagnostic
+evidence, not a corruption verdict by themselves.
 
 ## Important OST variant: 4 KiB pages and compressed blocks
 
-The ordinary 512-byte-page and Unicode PFF layouts are not the whole OST landscape. Independent format research and the libpff implementation document an Outlook 2013-era 64-bit OST variant with 4096-byte pages. Its data blocks can contain raw DEFLATE/RFC 1951 payloads; the size in the offset index is then the compressed size, while the block footer carries the uncompressed size. The same research describes distinct 4 KiB B-tree page and block footers.
+The ordinary 512-byte-page and Unicode PFF layouts are not the whole OST landscape. The Outlook 2013-era 64-bit Unicode variant uses 4096-byte pages and compressed-block metadata in its BBT entries. Exact page and block layouts are described in the primary specification and implementations linked above.
 
-This matters operationally: a parser that recognizes the `SO` OST signature but only understands the 512-byte/ordinary Unicode layout may produce a false “corrupt” diagnosis. OSTOM must therefore report the detected format variant and distinguish “unsupported variant” from “confirmed damaged.” The Go reader now has a bounded raw-DEFLATE path for footer-signalled 4 KiB external blocks, but is not yet proven against a genuine compressed 4 KiB OST; the synthetic `.ost` fixture does not exercise this variant.
+This matters operationally: a parser that recognizes the `SO` OST signature but only understands the 512-byte/ordinary Unicode layout may produce a false “corrupt” diagnosis. OSTOM reports the detected format variant and treats parser failures as “damaged or unsupported” until structural evidence distinguishes them.
 
-`libpff` is the strongest recovery reference found so far: it explicitly lists 64-bit 4 KiB compressed OST support, item recovery, corruption tolerance, and test profiles. It is licensed LGPL-3.0-or-later, so it should be an optional external backend or a separately reviewed component, not copied into the MIT core blindly. OSTOM should use it as a behavioural oracle and fallback candidate while keeping the Go-native path independently tested.
+`libpff` remains a useful independent implementation reference. It has a different role and license from OSTOM and is not part of the MIT core.
 
 ### External 4 KiB compatibility smoke
 
-Real mail stores are not committed to this repository. The opt-in
-`TestExternal4KOSTCorpusSmoke` test accepts `OSTOM_EXTERNAL_OST` and exercises
-the public indexed streaming path. Its first independently downloaded corpus
-is [`example-2013.ost` from freepst](https://raw.githubusercontent.com/hrbrmstr/freepst/master/inst/extdata/example-2013.ost), an Apache-2.0 project fixture whose README identifies Inbox and Sent Items messages. The observed SHA-256 on 2026-10-18 was
-`b18ff390d0c22273029ee580ab6025976af69a4f84e276d1b1c01a988650853d`.
+Real mail stores are not committed to this repository. Two public OST files
+have been used for local smoke testing (2026-10-18):
 
-It proves that the 4 KiB index header and at least one indexed payload can be
-read. It does **not** contain a readable XBLOCK/XXBLOCK in the bounded walk,
-and therefore does not yet validate a compressed payload tree or attachments.
-Run it explicitly after independently checking the download and its licence:
+- [`example-2013.ost` from freepst](https://raw.githubusercontent.com/hrbrmstr/freepst/master/inst/extdata/example-2013.ost), an Apache-2.0 project fixture. It exported 3 indexed messages and has no attachments. Observed SHA-256: `b18ff390d0c22273029ee580ab6025976af69a4f84e276d1b1c01a988650853d`.
+- [`sample.ost` from the GroupDocs example page](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/). Header inspection identified a 4 KiB Unicode OST. OSTOM exported 12 indexed messages and 4 attachments with no attachment failures; the output contained 4 MIME attachment sections.
+
+These are smoke tests, not exhaustive coverage or a representative mailbox
+corpus. The GroupDocs file was used locally and is not redistributed by OSTOM.
+The opt-in `TestExternal4KOSTCorpusSmoke` test accepts `OSTOM_EXTERNAL_OST` and
+exercises the public indexed streaming path with a supplied file. Run it after
+independently checking the download and its licence:
 
 ```sh
-OSTOM_EXTERNAL_OST=/path/to/example-2013.ost go test ./internal/format \
-  -run 'TestExternal4K.*CorpusSmoke' -v
+OSTOM_EXTERNAL_OST=/path/to/example-2013.ost go test -trimpath ./internal/format \
+  -run 'TestExternal4K.*CorpusSmoke'
 ```
+
+### Test corpus and fixture provenance
+
+The local developer corpus under
+`github.com/useti/go-pst/v6/data/support.pst` contains 59 indexed messages,
+including Sent-folder data. It is a PST, not a genuine OST, and is not committed
+or included in releases. The `testdata/fixtures/*.pst` and `*.ost` files are
+local derivatives used for header, truncation, trailer, B-tree, XBLOCK, and
+subnode damage tests.
+
+The fixture generator can also build a parser-validated synthetic OST. For
+`-messages 50`, it uses the Enron PST corpus, checks that enough indexed
+messages exist, changes the PFF client magic, validates the resulting
+container, then applies requested damage. Historical message content and
+addresses may be real; these generated fixtures are for local tests only and
+are not committed or released. Check the upstream corpus terms before
+redistributing copies.
 
 ## Recovery strategy
 

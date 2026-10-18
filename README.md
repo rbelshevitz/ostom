@@ -25,12 +25,10 @@ affiliated with, sponsored, or approved by Microsoft.
 
 ## Before you start
 
-Make a backup copy of the OST/PST file and run OSTOM against the copy. Keep the
-original unchanged. OSTOM opens the source read-only, but damaged data may be
-unreadable and recovery is not guaranteed. OSTOM is an independent,
-best-effort recovery utility, not a forensic tool.
-
-The project is deliberately not a forensic suite. It does not claim chain of custody, deleted-record recovery, password cracking, DPAPI/EFS/BitLocker decryption, or a guarantee that every damaged item can be reconstructed. The source store is opened read-only and all recovery results are best-effort.
+Use a working copy and keep the original unchanged. OSTOM opens the source
+read-only and writes exports only to the destination you specify. Recovery is
+best-effort, so review the exported messages and attachments before relying on
+them.
 
 ## Quick start
 
@@ -59,90 +57,44 @@ or build the source code. Download the latest [Windows amd64 release](https://gi
    Thunderbird profile's `Mail` directory, and start Thunderbird. Check the
    recovered messages and attachments before deleting anything.
 
-## What “encrypted OST” means here
-
-The PFF header has a `bCryptMethod` field. In the common OST/PST format this is normally `None`, `Permute`, or `Cyclic`: reversible block encoding used by the file format, not a user password and not modern disk encryption. OSTOM decodes these block bytes in memory because otherwise a valid external data block can be mistaken for an unknown payload. It never writes a decrypted copy of the source and does not attempt to defeat account, EFS, BitLocker, or other access controls. Unsupported or unknown methods are reported rather than silently guessed.
-
 ## What OSTOM does
 
-OSTOM is not presented as a universal replacement for every PFF reader or
-forensic recovery suite. Its practical difference is the recovery workflow:
+OSTOM focuses on a practical recovery workflow:
 
 - **Local-first:** physically present Sent, Drafts, Outbox, hidden, custom, and
   “This computer only” folders are treated as worth recovering.
-- **Inspect before extracting:** header, allocation, NBT/BBT, folder, message,
-  payload, and attachment evidence are reported separately.
+- **Inspect before extracting:** file, folder, message, and attachment findings
+  are reported separately.
 - **Partial results are first-class:** one bad node, message, or attachment does
   not discard the readable remainder; indexed and recovery-found items are kept
   separate.
 - **Operationally useful on Windows:** progress output, JSON reports, and a
   Thunderbird-ready folder tree are built in.
-- **Explainable escalation:** extended recovery is recommended only with explicit
-  evidence, not because of one advisory CRC mismatch.
+- **Optional recovery scan:** the report explains when a deeper scan may help.
 
-These are focus and workflow advantages, not a claim that OSTOM currently
-decodes more PFF variants than mature projects such as libpff. Native property,
-table, and orphan-node salvage remains an active v0.2 milestone.
-
-Projects such as `libpff` have a different role: they are general-purpose,
-low-level PFF libraries and recovery references. OSTOM uses them as format and
-behavioral references, but focuses on a local-first, explainable recovery path
-for a person dealing with a damaged Outlook store. These projects should not
-be compared as if they had the same product goal.
+Extended recovery keeps found items separate from the normal indexed export.
+More about the file format and diagnostic details is in [FORMAT](FORMAT.md).
 
 ### What can be recovered
 
-OSTOM preserves the folder hierarchy for readable indexed content and exports
-as much recoverable mail and attachment data as the file still exposes. A bad
-message or attachment should not discard the readable remainder. Damaged or
-orphaned items may be incomplete, duplicated, missing their original folder
-path, or placed in the separate `OSTOM Native Recovered` folder. The normal
-indexed export and the bounded native recovery export are intentionally kept
-distinguishable.
+OSTOM preserves the folder hierarchy for readable indexed content and keeps
+going when an individual message or attachment cannot be read. Native-recovery
+results are kept separate because their metadata or original folder path may
+be incomplete, and some may duplicate indexed items.
 
-Indexed messages use the reader's attachment table and stream readable
-attachment bytes into MIME output. The bounded native path can also associate
-explicit attachment subnodes with a recovered message and preserves filename,
-declared/readable size, `Content-ID`, and the regular/inline/embedded/external
-role when those properties are readable. Native attachment payloads are still
-memory-bounded (32 MiB by the CLI default). Indexed reading now handles the
-4 KiB B-tree pages and compressed blocks exercised by public OST samples. The
-GroupDocs sample smoke exported 12 indexed messages and 4 attachments without
-attachment failures. This does not establish support for every 4 KiB
-attachment-stream variant: arbitrary native attachment-stream trees and
-complete recovery of damaged attachment tables remain unsupported. A native
-attachment marked `partial` or `unavailable` is not a claim that the original
-file is absent.
+Indexed mail and readable attachments are exported in the usual folder
+hierarchy. A public 4 KiB OST smoke test exported 12 messages and 4 attachments
+without failures. Extended recovery can find additional candidates, but complex
+attachment layouts are still being explored.
 
-### Attachment recovery: guarantees, limits, and research
+### Attachment handling
 
-**What OSTOM currently guarantees.** It never modifies or uploads the source
-file. For an indexed message and attachment that its reader can open, OSTOM
-streams the attachment into that message's MIME/mbox export and continues with
-other messages after an individual failure. The indexed folder hierarchy is
-preserved. For a native candidate, OSTOM records an attachment only when the
-subnode has explicit attachment-property evidence; it keeps the association to
-that candidate's message BID/NID instead of guessing from a filename.
+Indexed attachments are streamed into the message export. Extended-recovery
+attachments are associated only when the file provides explicit evidence.
+`partial` and `unavailable` describe what was readable in this run. See
+[FORMAT](FORMAT.md) for details on attachment structures and open cases.
 
-**What the result does not prove.** A successful export proves only that the
-bytes read by this run were written to its output. It does not prove that a
-server lacks a copy, that a native candidate has its original folder, or that
-two recovered items are distinct. `partial` means some readable result exists
-but a limit or read error affected it. `unavailable` means this run could not
-read a payload; it is not proof that the payload never existed. Native
-candidate attachments can be incomplete or duplicated.
-
-**Still under investigation.** Arbitrary attachment-stream trees (including
-SLBLOCK and 4 KiB attachment variants), complete recovery of damaged attachment
-tables, embedded-message extraction as a separate `.eml`, and semantics of
-external references require attachment-bearing Outlook samples and dedicated
-fixtures before support can be claimed. The current native attachment path is
-a bounded salvage aid, not a replacement for a complete PFF attachment reader.
-
-## Current status
-
-The current milestone implements a bounded-memory inspection and Thunderbird
-export CLI on top of `github.com/grokify/outlook-pst-go`:
+## CLI syntax
 
 ```text
 ostom [--json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost
@@ -189,15 +141,8 @@ This does not by itself mean that the file is malware. Verify the archive
 against the published `SHA256SUMS.txt` before running it; in PowerShell:
 
 ```powershell
-Get-FileHash .\ostom-v0.2.2-windows-amd64.zip -Algorithm SHA256
+Get-FileHash .\ostom-v0.2.5-windows-amd64.zip -Algorithm SHA256
 ```
-
-An administrator may sign a private/internal build with an organization-owned
-or self-signed Authenticode certificate and deploy that certificate to trusted
-computers. This is free for internal use, but it does not create public trust
-and may not remove SmartScreen warnings on unrelated computers. Public
-distribution normally requires a certificate or signing service from a trusted
-certificate authority. Never publish the private `.pfx` signing key.
 
 ### Command-line options
 
@@ -207,25 +152,15 @@ The main options are:
 - `--output-dir DIR` — directory for `ostom-report.json`; defaults to
   `--export-dir` when set. It does not check free space.
 - `--export-dir DIR` — export indexed readable mail into a Thunderbird `Local Folders` tree.
-- `--recovery-scan` — also run the slower bounded native recovery pass and
-  enable the dependency's lenient recovery parser for export. Requires
+- `--recovery-scan` — run an additional, slower recovery pass. Requires
   `--export-dir`.
 - `--quiet` — suppress progress messages on stderr; warnings and the final
   report are still printed.
 
 ### Inspection and recovery
 
-The report can recommend or require an extended recovery scan; `--recovery-scan` remains explicit because it may take a long time on a large OST.
-
-When combined with `--export-dir`, `--recovery-scan` also enables the
-dependency's lenient recovery parser for export. The report marks this as
-`recovery_mode`; unreadable messages and attachments are still reported rather
-than presented as successfully recovered.
-
-Native candidates collected from indexed NBT/PC structures are written to a
-separate `Local Folders\OSTOM Native Recovered` folder and marked with
-`X-Ostom-Source: native-recovered`. The JSON and human-readable report keep
-native collection and export counts separate from the lenient indexed export.
+The report may recommend an extended scan. It can take longer on large files;
+additional candidates are kept separate from indexed mail.
 
 Use `--output-dir` to choose where the JSON report is saved:
 
@@ -236,15 +171,14 @@ ostom --output-dir E:\recovered file.ost
 If omitted, the report is saved in `--export-dir` when exporting. This option
 does not estimate output size or check available disk space.
 
-For a slower best-effort node recovery probe:
+To include the extended recovery scan:
 
 ```text
 ostom --recovery-scan --export-dir E:\recovered file.ost
 ```
 
-This enables lenient indexed export and runs OSTOM's bounded native collector.
-Native candidates are written to their separate `OSTOM Native Recovered`
-folder.
+Additional candidates are written to `OSTOM Native Recovered` and kept separate
+from indexed mail.
 
 ### Test fixture generator
 
@@ -256,33 +190,9 @@ go run ./cmd/ostom-fixture -kind ost -messages 50 -out testdata\fixtures\fifty.o
 go run ./cmd/ostom-fixture -kind pst -damage header-crc -out testdata\fixtures\sample-header-crc.pst
 ```
 
-`ostom-fixture.exe` is a developer and test helper, not the recovery tool for
-your mailbox. Ordinary users only need `ostom.exe`.
-
-It exists because development and regression tests should not depend on a
-private, damaged customer mailbox. The generator provides a repeatable small
-fixture and controlled corruption cases so parser, export, progress, and
-recovery behavior can be tested without modifying a real OST.
-
-The generated OST is a parser-validated synthetic OST container, not a mailbox created by Outlook. With `-messages 50`, the generator selects the bundled Enron PST corpus, verifies that it contains at least 50 indexed messages, changes the PFF client magic, validates the result, and only then applies requested damage. The current source corpus contains 59 indexed messages and includes Sent folders. Its messages and addresses may be real historical data rather than invented identities, so the corpus and generated fixtures are for local testing only: they are not committed or included in releases. Check the upstream corpus terms before redistributing any copy.
-
-#### Corpus inventory used by tests
-
-- `github.com/useti/go-pst/v6` `data/support.pst` (local Go module cache): the
-  current indexed PST corpus for NBT/BBT, payload, subnode, native collector,
-  export, and progress smoke tests. It contains 59 indexed messages and
-  Sent-folder data; it is not a genuine Outlook OST and is not committed.
-- `testdata/fixtures/*.pst` and `*.ost`: deterministic local derivatives made
-  by `ostom-fixture`, including header, truncation, trailer, B-tree, XBLOCK,
-  and subnode damage cases where the source corpus contains the structure.
-- Public real Outlook 4 KiB OST samples are exercised locally (not committed):
-  the [freepst sample](https://github.com/hrbrmstr/freepst/blob/master/inst/extdata/example-2013.ost)
-  exported 3 messages and contains no attachments; the
-  [GroupDocs sample](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/)
-  exported 12 messages and 4 attachments without failures. These are smoke
-  tests, not exhaustive coverage. More real OST samples with local-only
-  folders and varied attachments remain required before claiming
-  production-grade OST salvage.
+`ostom-fixture.exe` is a developer helper that creates repeatable synthetic
+test files. It is not needed for ordinary recovery. See [FORMAT](FORMAT.md) for
+test-corpus provenance and public OST samples used for validation.
 
 ### Thunderbird export
 
@@ -319,43 +229,17 @@ During export, the CLI reports indexed message counts and native recovery phases
 to stderr. `--quiet` suppresses this progress output. The CLI does not impose a
 process-wide memory cap or an idle timeout.
 
-The parser dependency is intentionally behind `internal/backend`. The final recovery path must provide streaming message/attachment readers; a backend that materializes an entire attachment is not acceptable for multi-gigabyte files.
+The CLI reports file, folder, message, and attachment counts and errors. See
+[FORMAT](FORMAT.md) for how structural findings are interpreted.
 
 OSTOM code is released under the MIT License. Licensing and attribution notes for dependencies are in `THIRD_PARTY_NOTICES.md`.
 
-## When does Outlook stop recognizing the mail database?
+## Diagnosis and extended recovery
 
-Outlook can fail at several different layers. “The file is not an Outlook data file” or “the set of folders cannot be opened” does not identify the failed layer by itself.
-
-| Layer | Typical failure | What OSTOM checks |
-|---|---|---|
-| File/header | truncation, wrong `!BDN`/`SO`, unsupported version, damaged header CRC | signature, type, version, page variant, header CRC where defined |
-| Root/index | invalid NBT/BBT roots or unreadable index page | declared size, root offsets, page type, root-page shape |
-| Allocation/page | damaged AMap/PMap, page type, CRC or back-pointer | known allocation pages and supported page footers |
-| Folder tree | unreadable hierarchy table or child node | folder paths and structural errors |
-| Message table | damaged contents table or message node | readable messages and failed folder/message paths |
-| Block/payload | bad block size, back-pointer, decompression or attachment stream | declared versus readable payload and attachment errors |
-
-Outlook may open a partially damaged file, or reject it before messages are visible. Microsoft documents both data-file repair and synchronization repair; the synchronization monitor can repair local sync state, scan the OST, and clear offline items, causing a full server resynchronization. [Microsoft synchronization monitor](https://learn.microsoft.com/en-us/microsoft-365-apps/outlook/configuration/sync-monitor-improvements)
-
-Safe Mode is separate: it disables COM add-ins and Exchange client extensions. If Outlook works only in Safe Mode, an add-in is a likely cause, but this is not proof that the OST is corrupt. This is user context, not part of the file-integrity verdict. [Microsoft Outlook troubleshooting](https://support.microsoft.com/en-us/outlook/how-to-troubleshoot-performance-issues-in-outlook)
-
-For Cached Exchange Mode, rebuilding an OST is a normal Microsoft remedy, but it is unsafe as a first recovery action when local-only Sent, Drafts, Outbox, or custom-folder content may not exist on the server. [Microsoft synchronization guidance](https://learn.microsoft.com/en-us/troubleshoot/outlook/synchronization/synchronization-issues-occur-in-outlook-owa)
-
-OSTOM therefore reports evidence by layer instead of returning one unexplained “broken” flag. A parser failure remains “damaged or unsupported” until structural scanning distinguishes corruption from an unsupported 4 KiB/compressed variant.
-
-### When does OSTOM recommend an extended recovery scan?
-
-The report includes an explainable `deep_recovery` plan. It is `required` when a lower layer is unusable (header/declared-size failure, missing or invalid roots, index access failure) or the high-level walk recovers no messages despite declared content. It is `recommended` only when there is accumulated strong evidence, such as multiple payload decode/read failures, missing NBT-to-BBT links, or a substantial message-error ratio. A single parser error, allocation anomaly, or advisory trailer/CRC mismatch alone does not force escalation. The report also lists the reasons.
-
-- The source OST/PST is never modified.
-- Quick inspection may read indexed node blocks for structural classification, but does not reconstruct or export attachment streams.
-- Declared attachment size is reported separately from bytes successfully read.
-- A successful parser open is not treated as proof of full integrity.
-- A recovery-backend panic is converted into a report error category; one malformed node must not terminate the whole inspection.
-- Export will preserve physical folder parentage and store identity, including local-only folders.
-
-Build requires network access to download Go modules. Until dependencies are available locally, source formatting and documentation can still be checked, but a complete build cannot be claimed.
+The report summarizes structural findings and may recommend an extended scan.
+The scan is optional, takes longer, and keeps additional candidates separate
+from indexed mail. See [FORMAT](FORMAT.md) for diagnostic layers and details on
+when the report recommends it.
 
 ## Documentation
 
@@ -366,21 +250,7 @@ Build requires network access to download Go modules. Until dependencies are ava
 
 ## Disclaimer
 
-OSTOM is provided as an independent, best-effort recovery utility. Use it on
-a copy of the source OST/PST, not on the only original. No recovery result is
-guaranteed, and a report that opens successfully is not proof that every item
-is intact.
-
-The `ostom` CLI opens the source store read-only and does not upload its
-contents. During inspection it writes no recovery files. When an explicit
-`--export-dir` is supplied, it creates or appends Thunderbird-compatible files
-only under that directory. `--output-dir` may also create the explicitly named
-directory for the JSON report. The source store is never modified
-by the CLI. The separate `ostom-fixture` developer tool writes only to its
-explicit fixture path and may create a temporary sibling file while generating
-the fixture.
-
-OSTOM is not affiliated with or endorsed by Microsoft and is not a forensic
-tool. You are responsible for preserving the original, checking exported
-messages and attachments, and complying with applicable privacy and data-
-handling requirements.
+OSTOM reads the source store without modifying or uploading it. Exports and
+reports are written only to the directories you specify. Use a working copy
+and review the result before relying on it. OSTOM is independent and not
+affiliated with Microsoft.
