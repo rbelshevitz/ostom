@@ -70,12 +70,27 @@ jobs:
       - name: Build release binaries
         shell: pwsh
         run: |
-          go build -trimpath -o "$env:RUNNER_TEMP\ostom.exe" .\cmd\ostom
-          go build -trimpath -o "$env:RUNNER_TEMP\ostom-fixture.exe" .\cmd\ostom-fixture
+          $archive = "ostom-$env:GITHUB_REF_NAME-windows-amd64.zip"
+          $staging = Join-Path $env:RUNNER_TEMP "ostom-windows-amd64"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          go build -trimpath -o "$staging\ostom.exe" .\cmd\ostom
+          Compress-Archive -Path "$staging\ostom.exe" -DestinationPath "$env:RUNNER_TEMP\$archive" -Force
 
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$env:GITHUB_REF_NAME" "$env:RUNNER_TEMP\ostom.exe" "$env:RUNNER_TEMP\ostom-fixture.exe" --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --generate-notes
+          $notes = @"
+          ## Windows download
+
+          Download ``ostom-$env:GITHUB_REF_NAME-windows-amd64.zip`` and extract ``ostom.exe``.
+          The archive is for 64-bit Windows (amd64).
+
+          OSTOM is a read-only, local-first tool: it exports readable indexed
+          messages and attachments, while bounded native recovery remains
+          best-effort. See the README for supported cases and limitations.
+          "@
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          Set-Content -Path $notesPath -Value $notes
+          gh release create "$env:GITHUB_REF_NAME" "$env:RUNNER_TEMP\ostom-$env:GITHUB_REF_NAME-windows-amd64.zip" --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --notes-file "$notesPath"
