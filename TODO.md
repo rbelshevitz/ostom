@@ -23,7 +23,18 @@ This is a useful diagnostic/export baseline, not yet a complete OST recovery
 engine. Native items can be partial, duplicate indexed messages, and lack a
 reliable original folder path.
 
-## Now — make recovery reviewable
+## Now — recover and associate attachments
+
+- [ ] Resolve arbitrary native attachment streams without buffering their
+  complete payload; preserve declared/readable size, checksum, output path, and
+  per-attachment errors.
+- [ ] Recover attachment tables and associate each attachment with its parent
+  message using structural identifiers; keep inline, embedded, and external
+  cases distinct.
+- [ ] Add deterministic fixtures for multiple attachments per message,
+  truncation, and association failures.
+
+## Then — make recovery reviewable
 
 - [ ] Write one deterministic recovery manifest (JSON and CSV) covering every
   exported or skipped indexed/native message and attachment: source identity,
@@ -40,10 +51,8 @@ reliable original folder path.
 
 - [ ] Complete bounded streaming of XBLOCK/XXBLOCK and SLBLOCK payload trees,
   including 4 KiB variants.
-- [ ] Resolve arbitrary attachment streams without buffering their complete
-  payload, including 4 KiB variants; retain declared versus readable size and
-  per-attachment status. Basic bounded native subnode attachment association
-  and MIME roles are already present.
+- [ ] Extend native attachment streaming to XBLOCK/XXBLOCK/SLBLOCK and 4 KiB
+  payload variants after the common attachment stream path is validated.
 - [ ] Add a salvage path for missing/damaged indexes, keeping its output
   separate from indexed data and suppressing only explainable duplicates.
 - [ ] Make folder/message/attachment damage independently visible; add stable
