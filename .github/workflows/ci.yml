@@ -98,6 +98,9 @@ jobs:
             and MIME role when readable.
           - Inline attachments use MIME ``Content-ID`` and
             ``Content-Disposition: inline``.
+          - Indexed parsing supports 4 KiB B-tree pages and compressed blocks;
+            the public [GroupDocs OST sample](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/)
+            smoke test exported 12 messages and 4 attachments.
 
           ### Download
 
@@ -111,7 +114,9 @@ jobs:
           memory-bounded (32 MiB by default) and may be ``partial`` or
           ``unavailable``. Arbitrary attachment-stream trees, complete recovery
           of damaged attachment tables, embedded-message ``.eml`` extraction,
-          and 4 KiB payload variants are still under investigation.
+          and native/orphan attachment-tree recovery are still under
+          investigation. The 4 KiB smoke test is not exhaustive coverage of
+          every attachment, compression, or encryption variant.
           "@
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Set-Content -Path $notesPath -Value $notes
