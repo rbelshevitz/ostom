@@ -17,7 +17,8 @@ source file.
   mbox and `.eml` files. Individual message or attachment failures do not stop
   the export.
 - Indexed parsing of 4 KiB B-tree pages and compressed blocks, smoke-tested
-  against a real Outlook 2013 OST with 3 indexed messages (no attachments).
+  against public OST samples, including an attachment-bearing sample (12
+  messages, 4 attachments exported without failures).
 - JSON reporting, space checks, progress/idle-timeout controls, and provenance
   for native candidates.
 
@@ -66,11 +67,16 @@ reliable original folder path.
   cases for truncation, roots, allocation maps, subnodes, and payloads.
 - [ ] Test a genuine Outlook OST containing local-only Sent/Drafts and
   attachments.
-- [x] Smoke-test indexed 4 KiB page/block parsing on a genuine Outlook 2013
-  OST: 3 of 3 indexed messages exported; the sample has no attachments.
-- [ ] Validate 4 KiB attachment payload trees and encryption semantics on
-  attachment-bearing real samples. The current smoke does not cover attachments
-  or native attachment-tree recovery.
+- [x] Smoke-test indexed 4 KiB page/block parsing on two genuine public OSTs:
+  the [freepst sample](https://github.com/hrbrmstr/freepst/blob/master/inst/extdata/example-2013.ost)
+  exported 3 messages (no attachments), and the
+  [GroupDocs sample](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/)
+  exported 12 messages and 4 attachments without failures. Samples remain in
+  `/tmp` only and are not committed.
+- [x] Smoke-test indexed attachment extraction from a genuine public 4 KiB OST:
+  4 attachments exported without failures.
+- [ ] Validate other 4 KiB compression/encryption variants and native/orphan
+  attachment-tree recovery against additional attachment-bearing OST samples.
 
 ## Later, only if it strengthens the workflow
 

@@ -106,11 +106,13 @@ explicit attachment subnodes with a recovered message and preserves filename,
 declared/readable size, `Content-ID`, and the regular/inline/embedded/external
 role when those properties are readable. Native attachment payloads are still
 memory-bounded (32 MiB by the CLI default). Indexed reading now handles the
-4 KiB B-tree pages and compressed blocks exercised by the Outlook 2013 smoke
-sample. This does not yet establish 4 KiB attachment-stream support: arbitrary
-native attachment-stream trees and complete recovery of damaged attachment
-tables remain unsupported. A native attachment marked `partial` or
-`unavailable` is not a claim that the original file is absent.
+4 KiB B-tree pages and compressed blocks exercised by public OST samples. The
+GroupDocs sample smoke exported 12 indexed messages and 4 attachments without
+attachment failures. This does not establish support for every 4 KiB
+attachment-stream variant: arbitrary native attachment-stream trees and
+complete recovery of damaged attachment tables remain unsupported. A native
+attachment marked `partial` or `unavailable` is not a claim that the original
+file is absent.
 
 ### Attachment recovery: guarantees, limits, and research
 
@@ -273,11 +275,14 @@ The generated OST is a parser-validated synthetic OST container, not a mailbox c
 - `testdata/fixtures/*.pst` and `*.ost`: deterministic local derivatives made
   by `ostom-fixture`, including header, truncation, trailer, B-tree, XBLOCK,
   and subnode damage cases where the source corpus contains the structure.
-- A real Outlook 2013 4 KiB OST smoke sample is exercised locally (not
-  committed): indexed export reads its 4 KiB pages/compressed blocks and
-  exports all 3 indexed messages. It contains no attachments, so it does not
-  validate attachment recovery. Real OST samples with local-only folders and
-  attachments remain required before claiming production-grade OST salvage.
+- Public real Outlook 4 KiB OST samples are exercised locally (not committed):
+  the [freepst sample](https://github.com/hrbrmstr/freepst/blob/master/inst/extdata/example-2013.ost)
+  exported 3 messages and contains no attachments; the
+  [GroupDocs sample](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/)
+  exported 12 messages and 4 attachments without failures. These are smoke
+  tests, not exhaustive coverage. More real OST samples with local-only
+  folders and varied attachments remain required before claiming
+  production-grade OST salvage.
 
 ### Thunderbird export
 
