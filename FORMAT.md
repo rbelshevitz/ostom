@@ -115,7 +115,7 @@ evidence, not a corruption verdict by themselves.
 
 ## Important OST variant: 4 KiB pages and compressed blocks
 
-The ordinary 512-byte-page and Unicode PFF layouts are not the whole OST landscape. The Outlook 2013-era 64-bit Unicode variant uses 4096-byte pages and compressed-block metadata in its BBT entries. Exact page and block layouts are described in the primary specification and implementations linked above.
+The ordinary 512-byte-page and Unicode PFF layouts are not the whole OST landscape. A 64-bit Unicode OST/PST can use 4096-byte pages and compressed-block metadata in its BBT entries. This is a structural format variant, not a reliable marker of the Outlook version; OSTOM determines it from the file header and page structure.
 
 This matters operationally: a parser that recognizes the `SO` OST signature but only understands the 512-byte/ordinary Unicode layout may produce a false “corrupt” diagnosis. OSTOM reports the detected format variant and treats parser failures as “damaged or unsupported” until structural evidence distinguishes them.
 
