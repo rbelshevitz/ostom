@@ -5,6 +5,30 @@ OSTOM is a read-only, local-first recovery tool for damaged Outlook
 still readable; it must never imply that a server copy is complete or alter the
 source file.
 
+## Short plan — read this first
+
+### Now
+
+- [ ] Establish a bounded healthy-PST/OST indexed-export baseline independent
+  of native recovery. Verify folder/message/attachment counts and checksums;
+  document `go-pst` limitations without treating it as a recovery oracle.
+
+### Next
+
+- [ ] Stream arbitrary native XBLOCK/XXBLOCK/SLBLOCK attachment trees,
+  including 4 KiB variants.
+- [ ] Add a separate salvage path for missing or damaged indexes.
+- [ ] Make folder, message, and attachment damage independently visible, with
+  stable exit codes and a quick scan that skips attachment payloads.
+
+### Later
+
+- [ ] Validate additional real OST samples and compression/encryption variants.
+- [ ] Consider an external, licence-reviewed comparison oracle such as libpff.
+- [ ] Keep PST/OST generation outside the Go runtime.
+
+The sections below are reference notes and evidence, not a second task queue.
+
 ## Current baseline
 
 - Safe header/index diagnostics for Unicode and detected 4 KiB layouts.
@@ -183,8 +207,6 @@ and never modifies or uploads the source.
 - [x] Add regression coverage for large, truncated, inline, Unicode-named, and multiple attachments using the deterministic EML corpus.
 - [x] Validate the complete path against the public 4 KiB OST sample and record what remains unproven. On 2026-10-19 the forced CLI scan wrote 13/13 native messages and 4/4 attachments with zero collection errors; indexed go-pst still reached its bounded 60-second timeout. The sample exposed zero readable hierarchy-table rows, so hierarchy consistency remains unproven on this corpus; arbitrary attachment trees and complete indexed export also remain unproven.
 - [ ] Keep PST/OST generation out of the Go runtime: an external PST builder remains optional tooling, not a prerequisite for OSTOM recovery.
-# Current unfinished step
+## Reference — completed hierarchy diagnostics
 
 - [x] Validate hierarchy-table consistency: compare child-folder `RowID` with `parentNID` and row name with `PidTagDisplayName`; report mismatches as diagnostics only and never trigger native recovery automatically.
-
-- [ ] Establish a bounded healthy-PST/OST indexed-export baseline independent of native recovery: validate complete folder/message/attachment counts and checksums across fixtures and public samples, and document `go-pst` limitations without treating it as a recovery oracle.
