@@ -4,6 +4,7 @@ package native
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -73,8 +74,16 @@ func RecoverAndExportWithProgress(name, root string, h format.Header, fileSize i
 	)
 	report := PipelineReport{Collection: collection}
 	if err != nil {
+		if collection.Cleanup != nil {
+			_ = collection.Cleanup()
+		}
 		return report, err
 	}
+	defer func() {
+		if collection.Cleanup != nil {
+			_ = collection.Cleanup()
+		}
+	}()
 	report.Export, err = ExportWithProgress(root, collection.Messages, nil)
 	return report, err
 }
@@ -93,8 +102,16 @@ func RecoverAndExportWithPhaseProgress(name, root string, h format.Header, fileS
 	)
 	report := PipelineReport{Collection: collection}
 	if err != nil {
+		if collection.Cleanup != nil {
+			_ = collection.Cleanup()
+		}
 		return report, err
 	}
+	defer func() {
+		if collection.Cleanup != nil {
+			_ = collection.Cleanup()
+		}
+	}()
 	report.Export, err = ExportWithProgress(root, collection.Messages, func(done, total int) {
 		if progress != nil {
 			progress("writing native recovery output", done, total)
@@ -139,14 +156,15 @@ func ExportWithProgress(root string, messages []format.RecoveredMessage, progres
 			if attachment.Incomplete {
 				report.IncompleteAttachments++
 			}
-			attachments = append(attachments, mbox.Attachment{Name: attachment.Name, MimeType: attachment.MimeType, ContentID: attachment.ContentID, Inline: attachment.Inline, Data: attachment.Data})
+			attachments = append(attachments, mbox.Attachment{Name: attachment.Name, MimeType: attachment.MimeType, ContentID: attachment.ContentID, Inline: attachment.Inline, Data: attachment.Data, Open: attachment.Open, Size: attachment.ReadableSize})
 		}
 		date := time.Time{}
 		if message.DateUnix > 0 {
 			date = time.Unix(message.DateUnix, 0).UTC()
 		}
+		folderPath := append([]string{"OSTOM Native Recovered"}, message.FolderPath...)
 		err := writer.WriteWithSource(
-			[]string{"OSTOM Native Recovered"},
+			folderPath,
 			message.Subject,
 			message.Sender,
 			"",
@@ -247,7 +265,7 @@ func recordNativeManifest(report *Report, root string, message format.RecoveredM
 	report.ManifestRecords = append(report.ManifestRecords, manifest.Record{
 		Kind: "message", Source: "native", Identity: fmt.Sprintf("native-bid-%016X", message.BID), Route: "native-recovered",
 		NID: fmt.Sprintf("0x%X", message.NID), BID: fmt.Sprintf("0x%X", message.BID), Status: status,
-		ReadableBytes: int64(len(message.Body)), ExportedBytes: exportedBytes, SHA256: checksum, OutputPath: outputPath, Errors: messageErrors,
+		FolderPath: filepath.Join(message.FolderPath...), ReadableBytes: int64(len(message.Body)), ExportedBytes: exportedBytes, SHA256: checksum, OutputPath: outputPath, Errors: messageErrors,
 	})
 	for _, attachment := range message.Attachments {
 		attachmentStatus := attachment.Status
@@ -264,10 +282,31 @@ func recordNativeManifest(report *Report, root string, message format.RecoveredM
 				attachmentStatus = "recovered"
 			}
 		}
+		var checksum string
+		if len(attachment.Data) > 0 {
+			sum := sha256.Sum256(attachment.Data)
+			checksum = fmt.Sprintf("%x", sum[:])
+		} else if attachment.Open != nil {
+			if opened, err := attachment.Open(); err == nil {
+				hash := sha256.New()
+				if _, err := io.Copy(hash, opened); err == nil {
+					checksum = fmt.Sprintf("%x", hash.Sum(nil))
+				}
+				_ = opened.Close()
+			}
+		}
+		exportedBytes := int64(0)
+		outputPath := ""
+		if emlPath != "" && readableBytes > 0 && attachmentStatus != "unavailable" {
+			exportedBytes = readableBytes
+			outputPath = filepath.Join(filepath.Base(root), "OSTOM Native Recovered EML", filepath.Base(emlPath))
+		}
+		recordErrors := append([]string(nil), attachment.Errors...)
 		report.ManifestRecords = append(report.ManifestRecords, manifest.Record{
 			Kind: "attachment", Source: "native", Identity: fmt.Sprintf("native-bid-%016X-nid-%X", message.BID, attachment.NID), Route: "native-recovered",
 			NID: fmt.Sprintf("0x%X", attachment.NID), BID: fmt.Sprintf("0x%X", message.BID), Status: attachmentStatus,
-			DeclaredBytes: attachment.DeclaredSize, ReadableBytes: readableBytes, Errors: append([]string(nil), attachment.Errors...),
+			DeclaredBytes: attachment.DeclaredSize, ReadableBytes: readableBytes, ExportedBytes: exportedBytes,
+			SHA256: checksum, OutputPath: outputPath, Errors: recordErrors,
 		})
 	}
 }

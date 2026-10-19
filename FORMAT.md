@@ -17,6 +17,15 @@ Primary references:
 
 - [Microsoft [MS-PST] specification](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst)
 - [NDB database structure](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/e4efaad0-1876-446e-9d34-bb921588f924)
+- [NID and NID_TYPE](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/18d7644e-cb33-4e11-95c0-34d8a84fbff6)
+- [Parent NID](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/65b9823b-530e-430a-aa4c-d4bad9ece9d3)
+- [Locating a message's parent folder](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/cf4c8e64-c36b-4a79-96dc-14e47c1d22af)
+- [Anatomy of a folder hierarchy](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/412a79f3-5b12-49b3-848f-da1738233db1)
+- [Hierarchy table](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/63a983fc-6d5b-4573-aa4c-2858116c0f73)
+- [Locating sub-folder object nodes](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/7ed1b488-f119-4d0c-be70-015dd360fc6d)
+- [Hierarchy table template and PidTagDisplayName](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/c08fb6cb-2d91-42e5-b70d-f3e4f9781a2a)
+- [Table Context and RowIndex](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/5e48be0d-a75a-4918-a277-50408ff96740)
+- [Sample folder object](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-pst/59235d49-bd76-4759-b26c-9769e97c4106)
 - [FileFormat.com OST overview](https://docs.fileformat.com/email/ost/) (secondary summary; verify byte-level claims against the official MS-PST specification)
 - [outlook-pst-go indexed reader](https://github.com/grokify/outlook-pst-go)
 - [go-pst recovery reader](https://github.com/useti/go-pst)
@@ -73,6 +82,19 @@ substantial share of message errors. A lone parser error, allocation-map
 anomaly, or advisory trailer/CRC mismatch does not trigger escalation alone.
 The scan remains explicit because it can take a long time.
 
+The user-facing assessment is scoped to the file. It does not diagnose the
+storage device, bad sectors, or data rot. Read errors are reported as file
+evidence when the operating system cannot provide bytes, but a parser cannot
+prove whether the cause was a disk failure, a damaged copy, or an unsupported
+variant. Advisory CRC and allocation anomalies remain warnings unless stronger
+structural evidence supports escalation.
+
+The current assessment uses `healthy`, `degraded`, and `unknown` classifications
+and a separate `deep_recovery` recommendation of `not_needed`, `recommended`,
+or `required`. Native recovery is not started when the recommendation is
+`not_needed`; `--recovery-scan` remains an explicit override. An optional
+indexed-export timeout is reported separately from the native recovery result.
+
 ## What the current structural scan checks
 
 Before the message walk, the current Go implementation performs a bounded,
@@ -86,10 +108,9 @@ physical ranges fit inside the file.
 Indexed reading handles 4 KiB B-tree pages and compressed blocks. The BBT
 provides stored and inflated block lengths; inflation is bounded by the
 declared length and checked for an exact match. A public OST sample smoke
-yielded bounded native message candidates, while complete attachment export
-remains unproven. This validates the
-indexed path on one sample, not every 4 KiB block, compression, encryption, or
-native/orphan attachment-tree variant. CRC mismatches remain diagnostic
+yielded bounded native message candidates and four readable attachment
+exports. This validates the indexed/native path on one sample, not every 4 KiB
+block, compression, encryption, or native/orphan attachment-tree variant. CRC mismatches remain diagnostic
 evidence, not a corruption verdict by themselves.
 
 ## Important OST variant: 4 KiB pages and compressed blocks
@@ -139,14 +160,18 @@ export path or every 4 KiB OST variant is supported.
 
 ### Current attachment export boundary
 
-The current native exporter deliberately materializes each recovered attachment
-payload in a bounded `[]byte` before rendering the message. This is sufficient
-for the proven sample and keeps allocation limits explicit, but it is not the
-final streaming design. Arbitrary XBLOCK/XXBLOCK/SLBLOCK chains, multi-block
-attachment streams, and truncation during a chain are not yet exposed as a
-streaming reader or written incrementally to the output. Until that work is
-completed, a recovered attachment is only claimed within the configured byte
-limit and its readable/partial status is recorded separately.
+The native attachment boundary is reader-based. Large subnode payloads are
+spooled one at a time into bounded temporary storage; the recovered attachment
+retains an `Open` reader, readable size, incomplete/truncated state, and bounded
+errors. The mbox/EML exporter streams Base64 from that reader and the recovery
+scan owns cleanup of the temporary payloads. The historical `[]byte` path
+remains a compatibility fallback for small or already-materialized candidates.
+
+The remaining boundary is format coverage, not the exporter API: arbitrary
+XBLOCK/XXBLOCK/SLBLOCK chains, multi-block attachment streams, and truncation
+during a chain still need broader fixtures and independent validation. A larger
+`PidTagAttachSize` is not by itself an incomplete attachment because the
+property describes the attachment object, not only the binary data stream.
 
 The independent [libpff attachment notes](https://github.com/libyal/libpff/blob/main/documentation/Personal%20Folder%20File%20(PFF)%20format.asciidoc#1251-the-attachments-sub-item)
 also document real-world cases where attachment size and the `0x3701` value do
@@ -159,7 +184,7 @@ Real mail stores are not committed to this repository. Two public OST files
 have been used for local smoke testing (2026-10-18):
 
 - [`example-2013.ost` from freepst](https://raw.githubusercontent.com/hrbrmstr/freepst/master/inst/extdata/example-2013.ost), an Apache-2.0 project fixture. It exported 3 indexed messages and has no attachments. Observed SHA-256: `b18ff390d0c22273029ee580ab6025976af69a4f84e276d1b1c01a988650853d`.
-- [`sample.ost` from the GroupDocs example page](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/). Header inspection identified a 4 KiB Unicode OST. The current native path yields 13 bounded candidates from 14 message/associated-message nodes after reading BBT `InflatedSize`; complete attachment export is not yet reproduced.
+- [`sample.ost` from the GroupDocs example page](https://docs.groupdocs.com/conversion/java/load-personal-storage-pst-or-ost-with-options/). Header inspection identified a 4 KiB Unicode OST. The native path yields 13 bounded candidates from 14 message/associated-message nodes after reading BBT `InflatedSize`; four attachment objects were associated and exported, including two payloads of about 16 MiB.
 
 These are smoke tests, not exhaustive coverage or a representative mailbox
 corpus. The GroupDocs file was used locally and is not redistributed by OSTOM.
@@ -199,6 +224,24 @@ redistributing copies.
 6. Optionally scan for orphaned nodes when the indexed tree is incomplete.
 
 The indexed scan and orphan recovery must be separate results. Recovered objects must never be silently mixed with normally indexed objects.
+
+### Folder provenance
+
+Folder provenance is established from PFF messaging-layer links rather than
+inferred from message content. The NBT leaf entry contains a message's
+`nidParent`, which identifies the immediate parent Folder object. Folder nodes
+also carry `nidParent`; their property context supplies `PidTagDisplayName`
+(`0x3001`) for the display name. The hierarchy table is the authoritative
+folder-child navigation structure and is also useful for consistency checks.
+
+OSTOM follows the available `nidParent` chain and resolves folder names from
+folder property contexts. Native messages retain `ParentNID` and
+`FolderPath`; the native mbox exporter uses the established path below
+`OSTOM Native Recovered`. If a folder node or its name cannot be established,
+the message remains exportable under the safe recovery root and the path is
+left unknown rather than guessed. Indexed scans also perform a bounded
+hierarchy-table consistency check; mismatches are diagnostics only and never
+automatically change the native-recovery decision.
 
 These references define the byte-level format. Library behaviour is a separate implementation fact: OSTOM treats library errors, panics, missing tables, and materialized payloads as backend limitations and records them in tests rather than treating them as format rules.
 

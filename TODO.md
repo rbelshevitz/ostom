@@ -25,6 +25,22 @@ source file.
 - JSON reporting, space checks, progress/idle-timeout controls, and provenance
   for native candidates.
 
+## Test-fixture strategy
+
+- [x] Add a deterministic Go EML corpus generator to the service fixture
+  utility (`ostom-fixture -kind eml`) with Unicode messages, multiple and
+  inline attachments, stable MIME boundaries, and a SHA-256 manifest.
+- [ ] Add an optional external PST builder for controlled fixtures. Keep it
+  outside the OSTOM runtime and validate generated PSTs with independent
+  readers; Outlook is an optional compatibility oracle, not a prerequisite.
+- [ ] Do not implement a PST writer in Go as part of OSTOM. The existing Go
+  writer dependency is not a reliable generator; PST creation is a separate
+  tool concern and must not block OST recovery work.
+- [ ] Keep real public OST files as the evidence source for OST-specific
+  behavior: provider/sync metadata, local-only folders, and compressed 4 KiB
+  variants. PST and synthetic-OST fixtures cover the common PFF/MAPI paths
+  only.
+
 This is a useful diagnostic/export baseline, not yet a complete OST recovery
 engine. Native items can be partial, duplicate indexed messages, and lack a
 reliable original folder path.
@@ -88,7 +104,7 @@ reliable original folder path.
   evidence.
 - [x] Emit safe per-message `.eml` fallback for indexed export too, with stable
   collision-resistant names.
-- [ ] Preserve source store/folder paths where the reader can establish them;
+- [x] Preserve source store/folder paths where the reader can establish them;
   clearly label native/orphan items whose path is unknown.
 - [ ] Separate and count recovered, partial, skipped, and orphaned items in
   the human report and JSON.
@@ -151,3 +167,24 @@ and never modifies or uploads the source.
   ordinary best-effort indexed export only.
 - [ ] Indexed go-pst export is not complete on this sample: it stalls while
   reading a later message and is reported as a bounded backend error.
+## Next implementation slice
+
+- [x] Add a conservative file-level integrity assessment from header, size,
+  allocation, and index-root evidence; keep storage-device diagnosis out of
+  scope.
+- [x] Separate native recovery success from optional indexed-export timeout in
+  the user-facing report.
+- [x] Use the assessment to choose or recommend recovery mode automatically;
+  keep manual override and explain the decision in calm language.
+- [x] Replace the attachment export boundary with an `io.Reader`/`Open`-based payload interface; keep the current byte-slice path as a compatibility fallback.
+- [x] Remove full attachment materialization from structural recovery: spool large payloads to bounded temporary storage and expose them through a reader with cleanup ownership.
+- [x] Preserve declared size, readable size, truncation/incomplete status, and recovery errors for every attachment.
+- [x] Extend the export manifest with checksum, declared/readable/exported byte counts, output path, and per-attachment errors.
+- [x] Add regression coverage for large, truncated, inline, Unicode-named, and multiple attachments using the deterministic EML corpus.
+- [x] Validate the complete path against the public 4 KiB OST sample and record what remains unproven. On 2026-10-19 the forced CLI scan wrote 13/13 native messages and 4/4 attachments with zero collection errors; indexed go-pst still reached its bounded 60-second timeout. The sample exposed zero readable hierarchy-table rows, so hierarchy consistency remains unproven on this corpus; arbitrary attachment trees and complete indexed export also remain unproven.
+- [ ] Keep PST/OST generation out of the Go runtime: an external PST builder remains optional tooling, not a prerequisite for OSTOM recovery.
+# Current unfinished step
+
+- [x] Validate hierarchy-table consistency: compare child-folder `RowID` with `parentNID` and row name with `PidTagDisplayName`; report mismatches as diagnostics only and never trigger native recovery automatically.
+
+- [ ] Establish a bounded healthy-PST/OST indexed-export baseline independent of native recovery: validate complete folder/message/attachment counts and checksums across fixtures and public samples, and document `go-pst` limitations without treating it as a recovery oracle.

@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,59 @@ import (
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
 )
+
+func TestRecoveredCollectorSpoolsLargeAttachment(t *testing.T) {
+	collector, err := NewRecoveredMessageCollectorWithAttachmentLimit(2, 1024, 256<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collector.Close()
+	added, err := collector.AddResolvedProperties(0x44, 0x100, []PropertyValue{
+		{PropID: 0x001A, PropType: 0x001E, Data: []byte("IPM.Note\x00")},
+	})
+	if err != nil || !added {
+		t.Fatalf("add message: added=%v err=%v", added, err)
+	}
+	payload := bytes.Repeat([]byte("attachment-data-"), 8192)
+	if err := collector.AddAttachmentProperties(0x100, 0x204, []PropertyValue{
+		{PropID: 0x3704, PropType: 0x001E, Data: []byte("large.bin\x00")},
+		{PropID: 0x3705, PropType: 0x0003, Data: []byte{1, 0, 0, 0}},
+		{PropID: 0x3701, PropType: 0x0102, Data: payload},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attachment := collector.Messages()[0].Attachments[0]
+	if len(attachment.Data) != 0 || attachment.Open == nil || attachment.ReadableSize != int64(len(payload)) {
+		t.Fatalf("attachment was not spooled: data=%d open=%v readable=%d", len(attachment.Data), attachment.Open != nil, attachment.ReadableSize)
+	}
+	reader, err := attachment.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("spooled payload mismatch: bytes=%d err=%v", len(got), err)
+	}
+}
+
+func TestResolvePropertyValueKeepsBinarySubnodeLazy(t *testing.T) {
+	payload := []byte("large attachment")
+	value, err := ResolvePropertyValueWithSubnodePayloads(
+		PropertyRecord{PropID: 0x3701, PropType: 0x0102, ValueHNID: 0x125},
+		nil,
+		map[uint64]SubnodePayload{0x125: {
+			Size: int64(len(payload)),
+			Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(payload)), nil },
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Data) != 0 || value.Open == nil || value.Size != int64(len(payload)) {
+		t.Fatalf("binary subnode was materialized: data=%d open=%v size=%d", len(value.Data), value.Open != nil, value.Size)
+	}
+}
 
 func TestReadHeaderVariants(t *testing.T) {
 	tests := []struct {
@@ -41,6 +95,30 @@ func TestReadHeaderVariants(t *testing.T) {
 				t.Fatalf("unexpected header: %+v", h)
 			}
 		})
+	}
+}
+
+func TestCheckHierarchyConsistencyReportsOnlyDiagnostics(t *testing.T) {
+	folders := map[uint64]HierarchyFolder{
+		0x42: {ParentNID: 0x10, DisplayName: "Inbox"},
+	}
+	result := CheckHierarchyConsistency([]HierarchyTableRow{
+		{RowID: 0x42, ParentNID: 0x10, DisplayName: "Inbox"},
+		{RowID: 0x42, ParentNID: 0x11, DisplayName: "Wrong"},
+		{RowID: 0x99, ParentNID: 0x10, DisplayName: "Missing"},
+	}, folders, 2)
+	if result.Status != "completed" || result.RowsChecked != 3 || result.Mismatches != 3 {
+		t.Fatalf("unexpected hierarchy result: %+v", result)
+	}
+	if len(result.Diagnostics) != 2 || result.Diagnostics[0].Kind != "parent-mismatch" || result.Diagnostics[1].Kind != "name-mismatch" {
+		t.Fatalf("unexpected bounded diagnostics: %+v", result.Diagnostics)
+	}
+}
+
+func TestCheckHierarchyConsistencyInvalidLimitDoesNotInspectRows(t *testing.T) {
+	result := CheckHierarchyConsistency([]HierarchyTableRow{{RowID: 1}}, nil, -1)
+	if result.Status != "invalid limit" || result.RowsChecked != 0 || result.Mismatches != 0 {
+		t.Fatalf("unexpected invalid-limit result: %+v", result)
 	}
 }
 

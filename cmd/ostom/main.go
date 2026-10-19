@@ -20,23 +20,27 @@ import (
 )
 
 type report struct {
-	Source       string                 `json:"source"`
-	SourceBytes  int64                  `json:"source_bytes"`
-	Header       format.Header          `json:"header"`
-	IndexRoots   format.IndexRootScan   `json:"index_roots"`
-	RecoveryScan bool                   `json:"recovery_scan"`
-	Indexed      *gopst.Report          `json:"indexed_export,omitempty"`
-	Native       *native.PipelineReport `json:"native_recovery,omitempty"`
-	Status       string                 `json:"status"`
-	Errors       []string               `json:"errors,omitempty"`
-	Elapsed      string                 `json:"elapsed"`
+	Source        string                     `json:"source"`
+	SourceBytes   int64                      `json:"source_bytes"`
+	Header        format.Header              `json:"header"`
+	IndexRoots    format.IndexRootScan       `json:"index_roots"`
+	Assessment    format.IntegrityAssessment `json:"assessment"`
+	RecoveryScan  bool                       `json:"recovery_scan"`
+	RecoveryRun   string                     `json:"recovery_run"`
+	Indexed       *gopst.Report              `json:"indexed_export,omitempty"`
+	IndexedStatus string                     `json:"indexed_status,omitempty"`
+	Native        *native.PipelineReport     `json:"native_recovery,omitempty"`
+	Status        string                     `json:"status"`
+	Errors        []string                   `json:"errors,omitempty"`
+	Warnings      []string                   `json:"warnings,omitempty"`
+	Elapsed       string                     `json:"elapsed"`
 }
 
 func main() {
 	jsonOutput := flag.Bool("json", false, "write the report as JSON to stdout")
 	exportDir := flag.String("export-dir", "", "directory for Thunderbird Local Folders export")
 	outputDir := flag.String("output-dir", "", "directory for ostom-report.json")
-	recoveryScan := flag.Bool("recovery-scan", false, "also run bounded native recovery")
+	recoveryScan := flag.Bool("recovery-scan", false, "force bounded native recovery")
 	quiet := flag.Bool("quiet", false, "suppress progress on stderr")
 	indexedWorker := flag.Bool("indexed-worker", false, "internal indexed export worker")
 	indexedRecovery := flag.Bool("indexed-recovery", false, "internal indexed worker recovery mode")
@@ -64,7 +68,9 @@ func main() {
 	if h.OK {
 		h.Allocation = format.ScanAllocationPages(source, h, info.Size())
 	}
-	r := report{Source: source, SourceBytes: info.Size(), Header: h, IndexRoots: format.ScanIndexRoots(source, h, info.Size()), RecoveryScan: *recoveryScan, Status: "completed"}
+	roots := format.ScanIndexRoots(source, h, info.Size())
+	assessment := format.AssessFile(h, roots, info.Size())
+	r := report{Source: source, SourceBytes: info.Size(), Header: h, IndexRoots: roots, Assessment: assessment, RecoveryScan: *recoveryScan, RecoveryRun: "not_run", Status: "completed"}
 	if !h.OK {
 		r.Status = "failed"
 		r.Errors = append(r.Errors, "source is not a recognized PFF/OST/PST file")
@@ -78,7 +84,13 @@ func main() {
 				printProgress("standard mailbox export", done, total)
 			}
 		}
-		if *recoveryScan {
+		runRecovery := *recoveryScan || assessment.DeepRecovery != "not_needed"
+		if runRecovery {
+			if *recoveryScan {
+				r.RecoveryRun = "explicit"
+			} else {
+				r.RecoveryRun = "automatic"
+			}
 			limits := native.Limits{MaxNodes: 100000, MaxBlocks: 1024, MaxBytes: 64 << 20, MaxRecords: 4096, MaxMessages: 100000, MaxBodyBytes: 4 << 20, MaxAttachmentBytes: 32 << 20, MaxErrorSamples: 256}
 			nativeReport, nativeErr := safeNativeExport(source, filepath.Join(*exportDir, "Local Folders"), h, info.Size(), limits, func(phase string, done, total int) {
 				if !*quiet {
@@ -105,10 +117,16 @@ func main() {
 		indexed, exportErr := runIndexedExportWithTimeout(source, *exportDir, false, progress, *quiet)
 		r.Indexed = &indexed
 		if exportErr != nil {
-			r.Errors = append(r.Errors, "indexed export: "+exportErr.Error())
+			r.IndexedStatus = "timeout_or_failed"
+			if strings.Contains(exportErr.Error(), "exceeded") {
+				r.IndexedStatus = "timeout"
+			}
+			r.Warnings = append(r.Warnings, "indexed export: "+exportErr.Error())
+		} else {
+			r.IndexedStatus = "completed"
 		}
 	} else {
-		r.Errors = append(r.Errors, "no export directory supplied; inspection only")
+		r.Warnings = append(r.Warnings, "no export directory supplied; inspection only")
 	}
 	if *recoveryScan {
 		manifestDir := *outputDir
@@ -299,8 +317,12 @@ func finish(r report, jsonOutput bool, outputDir, exportDir string) {
 		return
 	}
 	fmt.Printf("Status: %s\nSource: %s (%d bytes)\n", r.Status, r.Source, r.SourceBytes)
+	fmt.Printf("File assessment: %s\n", r.Assessment.Summary)
+	if r.Assessment.DeepRecovery != "not_needed" {
+		fmt.Printf("Recovery recommendation: %s\n", r.Assessment.DeepRecovery)
+	}
 	if r.Indexed != nil {
-		fmt.Printf("Indexed export: %d written, %d partial, %d failed\n", r.Indexed.Messages, r.Indexed.MessagesPartial, r.Indexed.SkippedMessages)
+		fmt.Printf("Indexed export (%s): %d written, %d partial, %d failed\n", r.IndexedStatus, r.Indexed.Messages, r.Indexed.MessagesPartial, r.Indexed.SkippedMessages)
 	}
 	if r.Native != nil {
 		fmt.Printf("Recovery scan: %d messages found; %s\n", len(r.Native.Collection.Messages), r.Native.Export.Status)
@@ -310,6 +332,9 @@ func finish(r report, jsonOutput bool, outputDir, exportDir string) {
 	}
 	for _, message := range r.Errors {
 		fmt.Printf("Warning: %s\n", message)
+	}
+	for _, warning := range r.Warnings {
+		fmt.Printf("Note: %s\n", warning)
 	}
 }
 

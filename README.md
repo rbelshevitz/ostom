@@ -153,15 +153,18 @@ The main options are:
 - `--output-dir DIR` — directory for `ostom-report.json`; defaults to
   `--export-dir` when set. It does not check free space.
 - `--export-dir DIR` — export indexed readable mail into a Thunderbird `Local Folders` tree.
-- `--recovery-scan` — run an additional, slower recovery pass. Requires
-  `--export-dir`.
+- `--recovery-scan` — force the additional, slower native recovery pass.
+  Requires `--export-dir`; otherwise the pass is selected automatically only
+  when the file assessment recommends it.
 - `--quiet` — suppress progress messages on stderr; warnings and the final
   report are still printed.
 
 ### Inspection and recovery
 
-The report may recommend an extended scan. It can take longer on large files;
-additional candidates are kept separate from indexed mail.
+The report assesses the file before export. Native recovery runs automatically
+only when the assessment says it is recommended or required, and can always be
+forced with `--recovery-scan`. It can take longer on large files; additional
+candidates are kept separate from indexed mail.
 
 Use `--output-dir` to choose where the JSON report is saved:
 

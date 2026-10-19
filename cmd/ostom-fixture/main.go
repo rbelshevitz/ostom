@@ -19,13 +19,27 @@ import (
 
 func main() {
 	out := flag.String("out", "testdata/fixtures/sample.pst", "fixture path")
-	kind := flag.String("kind", "pst", "pst or ost")
+	kind := flag.String("kind", "pst", "pst, ost, or eml")
 	damage := flag.String("damage", "", "none, header-crc, declared-size, truncate, btree-root, block-trailer, xblock-level, xblock-count, or subnode-entry")
 	source := flag.String("source", "", "known-good PST source; defaults to the dependency's sample.pst")
 	messages := flag.Int("messages", 0, "minimum indexed messages required in the source fixture")
+	emlCount := flag.Int("eml-count", 6, "number of deterministic EML messages when -kind eml")
 	flag.Parse()
-	if *kind != "pst" && *kind != "ost" {
-		fatalf("-kind must be pst or ost")
+	if *kind != "pst" && *kind != "ost" && *kind != "eml" {
+		fatalf("-kind must be pst, ost, or eml")
+	}
+	if *kind == "eml" {
+		if *emlCount <= 0 {
+			fatalf("-eml-count must be positive")
+		}
+		if *damage != "" && *damage != "none" {
+			fatalf("-damage is not supported with -kind eml")
+		}
+		if err := generateEMLCorpus(*out, *emlCount); err != nil {
+			fatalf("generate EML corpus: %v", err)
+		}
+		fmt.Printf("created %s (eml, count=%d)\n", *out, *emlCount)
+		return
 	}
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		fatalf("create fixture directory: %v", err)

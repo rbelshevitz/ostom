@@ -202,14 +202,16 @@ type IndexedPropertyContextResult struct {
 // result. Messages are ready for a later exporter, while errors retain only a
 // capped sample for the final report.
 type IndexedRecoveredMessageScan struct {
-	NodesAttempted int                `json:"nodes_attempted"`
-	Messages       []RecoveredMessage `json:"messages,omitempty"`
-	Rejected       int                `json:"rejected"`
-	Duplicates     int                `json:"duplicates"`
-	Errors         int                `json:"errors"`
-	ErrorSamples   []string           `json:"error_samples,omitempty"`
-	LimitReached   bool               `json:"limit_reached"`
-	Status         string             `json:"status"`
+	NodesAttempted int                  `json:"nodes_attempted"`
+	Messages       []RecoveredMessage   `json:"messages,omitempty"`
+	Rejected       int                  `json:"rejected"`
+	Duplicates     int                  `json:"duplicates"`
+	Errors         int                  `json:"errors"`
+	ErrorSamples   []string             `json:"error_samples,omitempty"`
+	LimitReached   bool                 `json:"limit_reached"`
+	Status         string               `json:"status"`
+	Hierarchy      HierarchyConsistency `json:"hierarchy"`
+	Cleanup        func() error         `json:"-"`
 }
 
 // PropertyContextScanError keeps a bounded sample of node-level failures so a
@@ -286,6 +288,21 @@ func ParseIndexedPropertyContext(name string, h Header, fileSize int64, bid uint
 // ParseIndexedPropertyContextWithSubnodes resolves PC values that point into
 // the node's subnode tree, including attachment payload properties.
 func ParseIndexedPropertyContextWithSubnodes(name string, h Header, fileSize int64, bid uint64, maxBlocks int, maxBytes uint64, maxRecords int, subnodes map[uint64][]byte) (IndexedPropertyContextResult, error) {
+	openers := make(map[uint64]SubnodePayload, len(subnodes))
+	for nid, data := range subnodes {
+		payload := append([]byte(nil), data...)
+		openers[nid] = SubnodePayload{Size: int64(len(payload)), Open: func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		}}
+	}
+	return ParseIndexedPropertyContextWithSubnodePayloads(name, h, fileSize, bid, maxBlocks, maxBytes, maxRecords, openers)
+}
+
+// ParseIndexedPropertyContextWithSubnodePayloads is the streaming variant of
+// ParseIndexedPropertyContextWithSubnodes. Property metadata is still parsed
+// from the HN heap, while large subnode values can remain on disk until the
+// attachment collector asks to export them.
+func ParseIndexedPropertyContextWithSubnodePayloads(name string, h Header, fileSize int64, bid uint64, maxBlocks int, maxBytes uint64, maxRecords int, subnodes map[uint64]SubnodePayload) (IndexedPropertyContextResult, error) {
 	blocks, assembly, err := CollectIndexedPayloadBlocks(name, h, fileSize, bid, maxBlocks, maxBytes)
 	result := IndexedPropertyContextResult{Assembly: assembly}
 	if err != nil {
@@ -300,7 +317,7 @@ func ParseIndexedPropertyContextWithSubnodes(name string, h Header, fileSize int
 		return result, err
 	}
 	for _, property := range result.Properties {
-		value, resolveErr := ResolvePropertyValue(property, heap, subnodes)
+		value, resolveErr := ResolvePropertyValueWithSubnodePayloads(property, heap, subnodes)
 		if resolveErr != nil {
 			result.ResolutionErrors = append(result.ResolutionErrors, resolveErr.Error())
 			continue
@@ -329,6 +346,57 @@ func CollectIndexedSubnodePayloads(name string, h Header, fileSize int64, rootBI
 	defer f.Close()
 	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
 	return collectSubnodePayloadsFromSource(source, entries, maxBlocks, maxBytes), tree, nil
+}
+
+// CollectIndexedSubnodePayloadReaders spools subnode payloads one at a time
+// and returns reopenable readers. It is used by native recovery so an
+// attachment does not occupy both the parser heap and the exporter heap.
+func CollectIndexedSubnodePayloadReaders(name string, h Header, fileSize int64, rootBID uint64, maxBlocks int, maxBytes uint64) (map[uint64]SubnodePayload, SubnodeTreeResult, func() error, error) {
+	entries, tree, err := WalkIndexedSubnodeTree(name, h, fileSize, rootBID, maxBlocks)
+	if err != nil {
+		return nil, tree, nil, err
+	}
+	_, bbt := WalkIndexTrees(name, h, fileSize, 100000, 64)
+	if bbt.blockLocations == nil {
+		return nil, tree, nil, fmt.Errorf("BBT locations unavailable")
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, tree, nil, err
+	}
+	defer f.Close()
+	dir, err := os.MkdirTemp("", "ostom-subnodes-")
+	if err != nil {
+		return nil, tree, nil, err
+	}
+	cleanup := func() error { return os.RemoveAll(dir) }
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
+	result := make(map[uint64]SubnodePayload)
+	for nid, entry := range entries {
+		if entry.DataBID == 0 {
+			continue
+		}
+		file, createErr := os.CreateTemp(dir, "subnode-")
+		if createErr != nil {
+			_ = cleanup()
+			return nil, tree, nil, createErr
+		}
+		path := file.Name()
+		assembly, streamErr := streamPayloadFromSource(source, entry.DataBID, maxBlocks, maxBytes, func(chunk []byte) error {
+			_, err := file.Write(chunk)
+			return err
+		})
+		closeErr := file.Close()
+		if streamErr != nil || closeErr != nil {
+			_ = os.Remove(path)
+			continue
+		}
+		result[nid] = SubnodePayload{
+			Size: int64(assembly.BytesProduced), Incomplete: assembly.Truncated,
+			Open: func() (io.ReadCloser, error) { return os.Open(path) },
+		}
+	}
+	return result, tree, cleanup, nil
 }
 
 func collectSubnodePayloadsFromSource(source payloadSource, entries map[uint64]SubnodeTreeEntry, maxBlocks int, maxBytes uint64) map[uint64][]byte {
@@ -379,10 +447,16 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 	}
 	nbt, bbt := WalkIndexTrees(name, h, fileSize, 100000, 64)
 	if bbt.blockLocations == nil {
+		_ = collector.Close()
 		scan.Status = "BBT locations unavailable"
 		return scan, nil
 	}
 	seen := make(map[uint64]bool)
+	folderPaths, hierarchy, folderErrors := collectIndexedFolderPaths(name, h, fileSize, nbt.nodeBIDs, maxBlocks, maxBytes, maxRecords, maxErrorSamples)
+	scan.Hierarchy = hierarchy
+	for _, folderErr := range folderErrors {
+		scan.addError(folderErr, maxErrorSamples)
+	}
 	total := 0
 	for _, node := range nbt.nodeBIDs {
 		if isMessageNID(node.nid) && node.dataBID != 0 && !seen[node.dataBID] {
@@ -394,6 +468,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		}
 	}
 	seen = make(map[uint64]bool)
+	cleanups := make([]func() error, 0)
 	if progress != nil {
 		progress(0, total)
 	}
@@ -410,7 +485,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		if progress != nil {
 			progress(scan.NodesAttempted, total)
 		}
-		var subnodes map[uint64][]byte
+		var subnodes map[uint64]SubnodePayload
 		var subnodeEntries map[uint64]SubnodeTreeEntry
 		if node.subnodeBID != 0 {
 			var subnodeErr error
@@ -418,12 +493,15 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 			if subnodeErr != nil {
 				scan.addError(fmt.Errorf("NID 0x%X subnode tree: %w", node.nid, subnodeErr), maxErrorSamples)
 			}
-			subnodes, _, subnodeErr = CollectIndexedSubnodePayloads(name, h, fileSize, node.subnodeBID, maxBlocks, maxBytes)
+			var cleanup func() error
+			subnodes, _, cleanup, subnodeErr = CollectIndexedSubnodePayloadReaders(name, h, fileSize, node.subnodeBID, maxBlocks, maxBytes)
 			if subnodeErr != nil {
 				scan.addError(fmt.Errorf("NID 0x%X subnodes: %w", node.nid, subnodeErr), maxErrorSamples)
+			} else if cleanup != nil {
+				cleanups = append(cleanups, cleanup)
 			}
 		}
-		result, parseErr := ParseIndexedPropertyContextWithSubnodes(name, h, fileSize, node.dataBID, maxBlocks, maxBytes, maxRecords, subnodes)
+		result, parseErr := ParseIndexedPropertyContextWithSubnodePayloads(name, h, fileSize, node.dataBID, maxBlocks, maxBytes, maxRecords, subnodes)
 		if parseErr != nil {
 			scan.addError(fmt.Errorf("NID 0x%X BID 0x%X: %w", node.nid, node.dataBID, parseErr), maxErrorSamples)
 			continue
@@ -431,7 +509,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		for _, resolutionErr := range result.ResolutionErrors {
 			scan.addError(fmt.Errorf("NID 0x%X BID 0x%X: %s", node.nid, node.dataBID, resolutionErr), maxErrorSamples)
 		}
-		added, addErr := collector.AddResolvedProperties(node.nid, node.dataBID, result.ResolvedProperties)
+		added, addErr := collector.AddResolvedPropertiesWithParent(node.nid, node.parentNID, node.dataBID, result.ResolvedProperties, folderPaths[node.parentNID])
 		if addErr != nil {
 			scan.addError(addErr, maxErrorSamples)
 		}
@@ -442,7 +520,7 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 			if entry.DataBID == 0 {
 				continue
 			}
-			attachment, attachmentErr := ParseIndexedPropertyContextWithSubnodes(name, h, fileSize, entry.DataBID, maxBlocks, maxBytes, maxRecords, subnodes)
+			attachment, attachmentErr := ParseIndexedPropertyContextWithSubnodePayloads(name, h, fileSize, entry.DataBID, maxBlocks, maxBytes, maxRecords, subnodes)
 			if attachmentErr != nil || !hasAttachmentProperties(attachment.Properties) {
 				continue
 			}
@@ -455,6 +533,18 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		}
 	}
 	scan.Messages = collector.Messages()
+	scan.Cleanup = func() error {
+		var firstErr error
+		for _, cleanup := range cleanups {
+			if err := cleanup(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		if err := collector.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
 	_, rejected, duplicates, collectorLimit := collector.Stats()
 	scan.Rejected = rejected
 	scan.Duplicates = duplicates
@@ -494,6 +584,123 @@ func hasAttachmentProperties(properties []PropertyRecord) bool {
 		}
 	}
 	return false
+}
+
+type folderInfo struct {
+	parent uint64
+	name   string
+}
+
+func collectIndexedFolderPaths(name string, h Header, fileSize int64, nodes []nodeRef, maxBlocks int, maxBytes uint64, maxRecords, maxDiagnostics int) (map[uint64][]string, HierarchyConsistency, []error) {
+	folders := make(map[uint64]folderInfo)
+	hierarchyFolders := make(map[uint64]HierarchyFolder)
+	hierarchyRows := make([]HierarchyTableRow, 0)
+	var errors []error
+	seen := make(map[uint64]bool)
+	for _, node := range nodes {
+		if node.nid&0x1F != 0x02 || node.dataBID == 0 || seen[node.dataBID] {
+			continue
+		}
+		seen[node.dataBID] = true
+		result, err := ParseIndexedPropertyContextWithSubnodes(name, h, fileSize, node.dataBID, maxBlocks, maxBytes, maxRecords, nil)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("folder NID 0x%X: %w", node.nid, err))
+			continue
+		}
+		folderName := ""
+		for _, value := range result.ResolvedProperties {
+			if value.PropID == 0x3001 { // PidTagDisplayName
+				folderName = decodePropertyText(value)
+				break
+			}
+		}
+		if folderName == "" {
+			folderName = fmt.Sprintf("Folder-%X", node.nid)
+		}
+		folders[node.nid] = folderInfo{parent: node.parentNID, name: folderName}
+		hierarchyFolders[node.nid] = HierarchyFolder{ParentNID: node.parentNID, DisplayName: folderName}
+		if node.subnodeBID != 0 {
+			payloads, _, subnodeErr := CollectIndexedSubnodePayloads(name, h, fileSize, node.subnodeBID, maxBlocks, maxBytes)
+			if subnodeErr != nil {
+				errors = append(errors, fmt.Errorf("folder NID 0x%X hierarchy subnodes: %w", node.nid, subnodeErr))
+				continue
+			}
+			rows, rowErrors := collectHierarchyRows(payloads, node.nid, maxRecords)
+			for _, rowErr := range rowErrors {
+				errors = append(errors, fmt.Errorf("folder NID 0x%X hierarchy table: %w", node.nid, rowErr))
+			}
+			hierarchyRows = append(hierarchyRows, rows...)
+		}
+	}
+	paths := make(map[uint64][]string, len(folders))
+	for nid := range folders {
+		paths[nid] = buildFolderPath(nid, folders)
+	}
+	return paths, CheckHierarchyConsistency(hierarchyRows, hierarchyFolders, maxDiagnostics), errors
+}
+
+func collectHierarchyRows(payloads map[uint64][]byte, parentNID uint64, maxRows int) ([]HierarchyTableRow, []error) {
+	rows := make([]HierarchyTableRow, 0)
+	var errors []error
+	for subnodeNID, payload := range payloads {
+		heap, err := NewHeapReader([][]byte{payload})
+		if err != nil || heap.ClientSignature() != 0x7C {
+			continue
+		}
+		header, err := ParseTableContext(heap, 128)
+		if err != nil {
+			continue
+		}
+		hasDisplayName := false
+		for _, column := range header.Columns {
+			if column.PropID == 0x3001 {
+				hasDisplayName = true
+				break
+			}
+		}
+		if !hasDisplayName {
+			continue
+		}
+		tableRows, err := ParseTableContextRows(heap, header, maxRows)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("subnode NID 0x%X: %w", subnodeNID, err))
+			continue
+		}
+		for _, tableRow := range tableRows {
+			cells, err := DecodeTableRow(header, tableRow)
+			if err != nil {
+				errors = append(errors, fmt.Errorf("subnode NID 0x%X row %d: %w", subnodeNID, tableRow.RowID, err))
+				continue
+			}
+			name := ""
+			for _, cell := range cells {
+				if cell.Present && cell.PropID == 0x3001 {
+					name = decodePropertyText(PropertyValue{PropType: cell.PropType, Data: cell.Data})
+					break
+				}
+			}
+			rows = append(rows, HierarchyTableRow{RowID: tableRow.RowID, ParentNID: parentNID, DisplayName: name})
+		}
+	}
+	return rows, errors
+}
+
+func buildFolderPath(nid uint64, folders map[uint64]folderInfo) []string {
+	path := make([]string, 0, 4)
+	seen := make(map[uint64]bool)
+	for nid != 0 && !seen[nid] {
+		seen[nid] = true
+		folder, ok := folders[nid]
+		if !ok {
+			break
+		}
+		path = append(path, folder.name)
+		nid = folder.parent
+	}
+	for left, right := 0, len(path)-1; left < right; left, right = left+1, right-1 {
+		path[left], path[right] = path[right], path[left]
+	}
+	return path
 }
 
 func (s *IndexedRecoveredMessageScan) addError(err error, maxSamples int) {
@@ -1049,10 +1256,21 @@ type PropertyRecord struct {
 
 // PropertyValue is a raw PC value with its storage provenance preserved.
 type PropertyValue struct {
-	PropID   uint16 `json:"prop_id"`
-	PropType uint16 `json:"prop_type"`
-	Source   string `json:"source"`
-	Data     []byte `json:"-"`
+	PropID     uint16                        `json:"prop_id"`
+	PropType   uint16                        `json:"prop_type"`
+	Source     string                        `json:"source"`
+	Data       []byte                        `json:"-"`
+	Open       func() (io.ReadCloser, error) `json:"-"`
+	Size       int64                         `json:"size,omitempty"`
+	Incomplete bool                          `json:"incomplete,omitempty"`
+}
+
+// SubnodePayload is a bounded, reopenable subnode value. Large attachment
+// payloads are kept outside the Go heap and opened only by the consumer.
+type SubnodePayload struct {
+	Open       func() (io.ReadCloser, error)
+	Size       int64
+	Incomplete bool
 }
 
 // TableColumn describes one TCOLDESC entry in a Table Context.
@@ -1084,6 +1302,80 @@ type TableRowData struct {
 	Data     []byte `json:"-"`
 }
 
+// HierarchyTableRow is the small, independently decoded part of a folder
+// hierarchy row needed for consistency diagnostics. It deliberately keeps
+// the row identity separate from the NBT node so a damaged table cannot
+// silently redefine the recovery relationship.
+type HierarchyTableRow struct {
+	RowID       uint32 `json:"row_id"`
+	ParentNID   uint64 `json:"parent_nid"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// HierarchyDiagnostic records a mismatch between a hierarchy-table row and
+// the folder identity recovered from NBT. These are warnings only: callers
+// must not use them as a reason to start or suppress native recovery.
+type HierarchyDiagnostic struct {
+	RowID          uint32 `json:"row_id"`
+	ParentNID      uint64 `json:"parent_nid"`
+	ExpectedParent uint64 `json:"expected_parent_nid,omitempty"`
+	DisplayName    string `json:"display_name,omitempty"`
+	ExpectedName   string `json:"expected_name,omitempty"`
+	Kind           string `json:"kind"`
+}
+
+// HierarchyFolder is the independently recovered folder identity used by
+// CheckHierarchyConsistency.
+type HierarchyFolder struct {
+	ParentNID   uint64
+	DisplayName string
+}
+
+// HierarchyConsistency is a bounded, reportable check over folder hierarchy
+// evidence. Diagnostics are intentionally data, not errors, because damaged
+// hierarchy tables must never trigger native recovery automatically.
+type HierarchyConsistency struct {
+	RowsChecked int                   `json:"rows_checked"`
+	Mismatches  int                   `json:"mismatches"`
+	Diagnostics []HierarchyDiagnostic `json:"diagnostics,omitempty"`
+	Status      string                `json:"status"`
+}
+
+// CheckHierarchyConsistency compares hierarchy rows with folder identities.
+// Folder keys are full NIDs; hierarchy RowID is the low 32-bit NID form used
+// by table rows. maxDiagnostics bounds retained evidence, not the count.
+func CheckHierarchyConsistency(rows []HierarchyTableRow, folders map[uint64]HierarchyFolder, maxDiagnostics int) HierarchyConsistency {
+	result := HierarchyConsistency{Status: "completed"}
+	if maxDiagnostics < 0 {
+		result.Status = "invalid limit"
+		return result
+	}
+	for _, row := range rows {
+		result.RowsChecked++
+		folder, ok := folders[uint64(row.RowID)]
+		if !ok {
+			result.Mismatches++
+			if len(result.Diagnostics) < maxDiagnostics {
+				result.Diagnostics = append(result.Diagnostics, HierarchyDiagnostic{RowID: row.RowID, ParentNID: row.ParentNID, DisplayName: row.DisplayName, Kind: "unknown-child"})
+			}
+			continue
+		}
+		if row.ParentNID != folder.ParentNID {
+			result.Mismatches++
+			if len(result.Diagnostics) < maxDiagnostics {
+				result.Diagnostics = append(result.Diagnostics, HierarchyDiagnostic{RowID: row.RowID, ParentNID: row.ParentNID, ExpectedParent: folder.ParentNID, DisplayName: row.DisplayName, ExpectedName: folder.DisplayName, Kind: "parent-mismatch"})
+			}
+		}
+		if row.DisplayName != folder.DisplayName {
+			result.Mismatches++
+			if len(result.Diagnostics) < maxDiagnostics {
+				result.Diagnostics = append(result.Diagnostics, HierarchyDiagnostic{RowID: row.RowID, ParentNID: row.ParentNID, ExpectedParent: folder.ParentNID, DisplayName: row.DisplayName, ExpectedName: folder.DisplayName, Kind: "name-mismatch"})
+			}
+		}
+	}
+	return result
+}
+
 // TableCell is one decoded raw TC cell. Data is present only when the CEB
 // says the property exists; no MAPI type conversion is implied here.
 type TableCell struct {
@@ -1109,6 +1401,8 @@ type TableRowSignals struct {
 type RecoveredMessage struct {
 	NID          uint64                `json:"nid"`
 	BID          uint64                `json:"bid"`
+	ParentNID    uint64                `json:"parent_nid,omitempty"`
+	FolderPath   []string              `json:"folder_path,omitempty"`
 	MessageClass string                `json:"message_class,omitempty"`
 	Subject      string                `json:"subject,omitempty"`
 	Sender       string                `json:"sender,omitempty"`
@@ -1125,20 +1419,21 @@ type RecoveredMessage struct {
 // PidTagAttachSize versus payload-size differences are non-fatal Warnings
 // because the former describes the attachment object, not only its data.
 type RecoveredAttachment struct {
-	NID          uint64   `json:"nid"`
-	Name         string   `json:"name,omitempty"`
-	MimeType     string   `json:"mime_type,omitempty"`
-	ContentID    string   `json:"content_id,omitempty"`
-	Role         string   `json:"role"`
-	AttachMethod uint32   `json:"attach_method,omitempty"`
-	DeclaredSize int64    `json:"declared_size,omitempty"`
-	ReadableSize int64    `json:"readable_size"`
-	Status       string   `json:"status"`
-	Data         []byte   `json:"-"`
-	Inline       bool     `json:"inline"`
-	Incomplete   bool     `json:"incomplete"`
-	Errors       []string `json:"errors,omitempty"`
-	Warnings     []string `json:"warnings,omitempty"`
+	NID          uint64                        `json:"nid"`
+	Name         string                        `json:"name,omitempty"`
+	MimeType     string                        `json:"mime_type,omitempty"`
+	ContentID    string                        `json:"content_id,omitempty"`
+	Role         string                        `json:"role"`
+	AttachMethod uint32                        `json:"attach_method,omitempty"`
+	DeclaredSize int64                         `json:"declared_size,omitempty"`
+	ReadableSize int64                         `json:"readable_size"`
+	Status       string                        `json:"status"`
+	Data         []byte                        `json:"-"`
+	Open         func() (io.ReadCloser, error) `json:"-"`
+	Inline       bool                          `json:"inline"`
+	Incomplete   bool                          `json:"incomplete"`
+	Errors       []string                      `json:"errors,omitempty"`
+	Warnings     []string                      `json:"warnings,omitempty"`
 }
 
 // RecoveredMessageCollector turns resolved native properties into bounded
@@ -1152,7 +1447,10 @@ type RecoveredMessageCollector struct {
 	duplicates    int
 	rejected      int
 	limited       bool
+	payloadDir    string
 }
+
+const attachmentSpoolThreshold = 64 << 10
 
 func NewRecoveredMessageCollector(maxMessages, maxBodyBytes int) (*RecoveredMessageCollector, error) {
 	return NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, maxBodyBytes)
@@ -1166,18 +1464,30 @@ func NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, 
 	if maxMessages <= 0 || maxBodyBytes <= 0 || maxAttachmentBytes <= 0 {
 		return nil, fmt.Errorf("recovered message limits must be positive")
 	}
+	payloadDir, err := os.MkdirTemp("", "ostom-attachments-")
+	if err != nil {
+		return nil, fmt.Errorf("create attachment spool: %w", err)
+	}
 	return &RecoveredMessageCollector{
 		maxMessages:   maxMessages,
 		maxBody:       maxBodyBytes,
 		maxAttachment: maxAttachmentBytes,
 		messages:      make([]RecoveredMessage, 0, maxMessages),
 		seen:          make(map[uint64]bool),
+		payloadDir:    payloadDir,
 	}, nil
 }
 
 // AddResolvedProperties adds one native node. The bool is false when there is
 // not enough message evidence to present it as a recovered message.
 func (c *RecoveredMessageCollector) AddResolvedProperties(nid, bid uint64, values []PropertyValue) (bool, error) {
+	return c.AddResolvedPropertiesWithParent(nid, 0, bid, values, nil)
+}
+
+// AddResolvedPropertiesWithParent retains the NBT parent-folder link when it
+// is available. The link is structural provenance, not a name inferred from
+// message content.
+func (c *RecoveredMessageCollector) AddResolvedPropertiesWithParent(nid, parentNID, bid uint64, values []PropertyValue, folderPath []string) (bool, error) {
 	if c == nil {
 		return false, fmt.Errorf("recovered message collector is nil")
 	}
@@ -1193,7 +1503,7 @@ func (c *RecoveredMessageCollector) AddResolvedProperties(nid, bid uint64, value
 		c.limited = true
 		return false, nil
 	}
-	message := RecoveredMessage{NID: nid, BID: bid, Properties: len(values)}
+	message := RecoveredMessage{NID: nid, BID: bid, ParentNID: parentNID, FolderPath: append([]string(nil), folderPath...), Properties: len(values)}
 	senderEmail := ""
 	for _, value := range values {
 		switch value.PropID {
@@ -1294,7 +1604,19 @@ func (c *RecoveredMessageCollector) AddAttachmentPropertiesWithErrors(messageBID
 					attachment.DeclaredSize = int64(size)
 				}
 			case 0x3701: // PidTagAttachDataBinary
-				if len(value.Data) > c.maxAttachment {
+				if value.Open != nil {
+					if value.Incomplete {
+						attachment.Incomplete = true
+						attachment.Errors = append(attachment.Errors, "attachment payload was truncated by recovery limits")
+					}
+					if value.Size > int64(c.maxAttachment) {
+						attachment.Incomplete = true
+						attachment.Errors = append(attachment.Errors, "attachment payload truncated by collector limit")
+					} else {
+						attachment.Open = value.Open
+						attachment.ReadableSize = value.Size
+					}
+				} else if len(value.Data) > c.maxAttachment {
 					attachment.Data = append([]byte(nil), value.Data[:c.maxAttachment]...)
 					attachment.Incomplete = true
 					attachment.Errors = append(attachment.Errors, "attachment payload truncated by collector limit")
@@ -1310,11 +1632,23 @@ func (c *RecoveredMessageCollector) AddAttachmentPropertiesWithErrors(messageBID
 		if attachment.DeclaredSize > int64(len(attachment.Data)) {
 			attachment.Warnings = append(attachment.Warnings, "PidTagAttachSize exceeds attachment data length; it includes the attachment object properties")
 		}
-		if attachment.Role != "external" && attachment.DeclaredSize == 0 && len(attachment.Data) == 0 {
+		if attachment.Role != "external" && attachment.DeclaredSize == 0 && len(attachment.Data) == 0 && attachment.Open == nil {
 			attachment.Incomplete = true
 			attachment.Errors = append(attachment.Errors, "attachment payload unavailable")
 		}
-		attachment.ReadableSize = int64(len(attachment.Data))
+		if attachment.ReadableSize == 0 {
+			attachment.ReadableSize = int64(len(attachment.Data))
+		}
+		if len(attachment.Data) >= attachmentSpoolThreshold {
+			path, err := c.spoolAttachment(attachment.Data)
+			if err != nil {
+				attachment.Incomplete = true
+				attachment.Errors = append(attachment.Errors, "attachment payload spool failed: "+err.Error())
+			} else {
+				attachment.Data = nil
+				attachment.Open = func() (io.ReadCloser, error) { return os.Open(path) }
+			}
+		}
 		switch {
 		case attachment.Role == "external" && attachment.ReadableSize == 0 && !attachment.Incomplete:
 			attachment.Status = "external"
@@ -1329,6 +1663,34 @@ func (c *RecoveredMessageCollector) AddAttachmentPropertiesWithErrors(messageBID
 		return nil
 	}
 	return fmt.Errorf("message BID 0x%X not found for attachment NID 0x%X", messageBID, attachmentNID)
+}
+
+func (c *RecoveredMessageCollector) spoolAttachment(data []byte) (string, error) {
+	file, err := os.CreateTemp(c.payloadDir, "payload-")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+// Close removes temporary attachment payloads retained by the collector.
+func (c *RecoveredMessageCollector) Close() error {
+	if c == nil || c.payloadDir == "" {
+		return nil
+	}
+	err := os.RemoveAll(c.payloadDir)
+	c.payloadDir = ""
+	return err
 }
 
 func attachmentRole(method uint32, inline bool) string {
@@ -1732,6 +2094,20 @@ func propertyFixedSize(propType uint16) int {
 // deliberately returns raw bytes; decoding strings, times, and MAPI-specific
 // structures belongs to a higher layer.
 func ResolvePropertyValue(record PropertyRecord, heap *HeapReader, subnodes map[uint64][]byte) (PropertyValue, error) {
+	payloads := make(map[uint64]SubnodePayload, len(subnodes))
+	for nid, data := range subnodes {
+		payload := append([]byte(nil), data...)
+		payloads[nid] = SubnodePayload{Size: int64(len(payload)), Open: func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		}}
+	}
+	return ResolvePropertyValueWithSubnodePayloads(record, heap, payloads)
+}
+
+// ResolvePropertyValueWithSubnodePayloads preserves large binary subnode
+// values as reopenable streams. Non-binary properties are read into memory
+// because their metadata is needed by the collector.
+func ResolvePropertyValueWithSubnodePayloads(record PropertyRecord, heap *HeapReader, subnodes map[uint64]SubnodePayload) (PropertyValue, error) {
 	value := PropertyValue{PropID: record.PropID, PropType: record.PropType}
 	fixedSize := propertyFixedSize(record.PropType)
 	if fixedSize > 0 && fixedSize <= 4 {
@@ -1760,12 +2136,29 @@ func ResolvePropertyValue(record PropertyRecord, heap *HeapReader, subnodes map[
 	if subnodes == nil {
 		return value, fmt.Errorf("property 0x%04X references subnode NID 0x%X but subnodes are unavailable", record.PropID, record.ValueHNID)
 	}
-	data, ok := subnodes[uint64(record.ValueHNID)]
+	payload, ok := subnodes[uint64(record.ValueHNID)]
 	if !ok {
 		return value, fmt.Errorf("property 0x%04X subnode NID 0x%X not found", record.PropID, record.ValueHNID)
 	}
 	value.Source = "subnode"
-	value.Data = append([]byte(nil), data...)
+	value.Size = payload.Size
+	value.Incomplete = payload.Incomplete
+	if record.PropID == 0x3701 && payload.Open != nil {
+		value.Open = payload.Open
+		return value, nil
+	}
+	if payload.Open == nil {
+		return value, fmt.Errorf("property 0x%04X subnode NID 0x%X has no reader", record.PropID, record.ValueHNID)
+	}
+	reader, err := payload.Open()
+	if err != nil {
+		return value, err
+	}
+	value.Data, err = io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		return value, fmt.Errorf("property 0x%04X subnode NID 0x%X: %w", record.PropID, record.ValueHNID, err)
+	}
 	return value, nil
 }
 
@@ -2534,6 +2927,7 @@ type nodeRef struct {
 	nid        uint64
 	dataBID    uint64
 	subnodeBID uint64
+	parentNID  uint64
 }
 
 func resolveNodeBlocks(nbt *IndexTreeScan, blockBIDs map[uint64]bool) {
@@ -2623,7 +3017,7 @@ func readIndexPage(f *os.File, offset uint64, pageSize int, fileSize int64, expe
 	} else if expectedType == 0x81 {
 		// Unicode NBT leaf entries are 32 bytes: NID, bidData, bidSub,
 		// nidParent, and four bytes of padding.
-		if entrySize < 28 {
+		if entrySize < 32 {
 			return indexPage{}, false
 		}
 		result.Nodes = make([]nodeRef, 0, entries)
@@ -2633,6 +3027,7 @@ func readIndexPage(f *os.File, offset uint64, pageSize int, fileSize int64, expe
 				nid:        binary.LittleEndian.Uint64(page[pos : pos+8]),
 				dataBID:    binary.LittleEndian.Uint64(page[pos+8 : pos+16]),
 				subnodeBID: binary.LittleEndian.Uint64(page[pos+16 : pos+24]),
+				parentNID:  binary.LittleEndian.Uint64(page[pos+24 : pos+32]),
 			})
 		}
 	}

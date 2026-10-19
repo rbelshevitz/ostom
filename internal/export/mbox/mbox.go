@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
@@ -20,6 +21,10 @@ type Attachment struct {
 	ContentID string
 	Inline    bool
 	Data      []byte
+	// Open supplies the payload on demand. When present, the exporter copies
+	// it directly through the MIME encoder instead of making an encoded copy.
+	Open func() (io.ReadCloser, error)
+	Size int64
 }
 
 type Writer struct {
@@ -107,7 +112,11 @@ func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date 
 
 	usable := make([]Attachment, 0, len(attachments))
 	for _, attachment := range attachments {
-		if w.MaxAttachmentMemory > 0 && int64(len(attachment.Data)) > w.MaxAttachmentMemory {
+		size := attachment.Size
+		if size == 0 {
+			size = int64(len(attachment.Data))
+		}
+		if w.MaxAttachmentMemory > 0 && size > w.MaxAttachmentMemory {
 			w.SkippedAttachments++
 			continue
 		}
@@ -145,15 +154,8 @@ func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date 
 			if err != nil {
 				return nil, err
 			}
-			encoded := make([]byte, base64.StdEncoding.EncodedLen(len(attachment.Data)))
-			base64.StdEncoding.Encode(encoded, attachment.Data)
-			for i := 0; i < len(encoded); i += 76 {
-				end := i + 76
-				if end > len(encoded) {
-					end = len(encoded)
-				}
-				part.Write(encoded[i:end])
-				part.Write([]byte("\r\n"))
+			if err := writeBase64(part, attachment); err != nil {
+				return nil, fmt.Errorf("encode attachment %q: %w", attachment.Name, err)
 			}
 		}
 		if err := mw.Close(); err != nil {
@@ -164,6 +166,73 @@ func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date 
 	}
 
 	return msg.Bytes(), nil
+}
+
+// writeBase64 streams an attachment through the MIME encoder. Data remains a
+// compatibility fallback for recovered candidates that are already bounded
+// in memory; new backends can provide Open and avoid loading the payload.
+func writeBase64(dst io.Writer, attachment Attachment) error {
+	reader := io.Reader(bytes.NewReader(attachment.Data))
+	var closer io.Closer
+	if attachment.Open != nil {
+		opened, err := attachment.Open()
+		if err != nil {
+			return err
+		}
+		reader = opened
+		closer = opened
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	wrapped := &base64LineWriter{dst: dst}
+	encoder := base64.NewEncoder(base64.StdEncoding, wrapped)
+	if _, err := io.Copy(encoder, reader); err != nil {
+		_ = encoder.Close()
+		return err
+	}
+	if err := encoder.Close(); err != nil {
+		return err
+	}
+	return wrapped.flush()
+}
+
+type base64LineWriter struct {
+	dst  io.Writer
+	line []byte
+}
+
+func (w *base64LineWriter) Write(data []byte) (int, error) {
+	written := 0
+	for len(data) > 0 {
+		space := 76 - len(w.line)
+		if space > len(data) {
+			space = len(data)
+		}
+		w.line = append(w.line, data[:space]...)
+		data = data[space:]
+		written += space
+		if len(w.line) == 76 {
+			if err := w.flush(); err != nil {
+				return written, err
+			}
+		}
+	}
+	return written, nil
+}
+
+func (w *base64LineWriter) flush() error {
+	if len(w.line) == 0 {
+		return nil
+	}
+	if _, err := w.dst.Write(w.line); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w.dst, "\r\n"); err != nil {
+		return err
+	}
+	w.line = w.line[:0]
+	return nil
 }
 
 func (w *Writer) folderFile(parts []string) (string, error) {

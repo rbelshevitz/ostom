@@ -60,3 +60,17 @@ func TestExportRecoveredMessages(t *testing.T) {
 		}
 	}
 }
+
+func TestExportUsesRecoveredFolderPath(t *testing.T) {
+	root := t.TempDir()
+	_, err := Export(root, []format.RecoveredMessage{{
+		BID: 0x201, Subject: "Foldered", Body: []byte("body"), FolderPath: []string{"Inbox", "Archive"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "OSTOM Native Recovered.sbd", "Inbox.sbd", "Archive")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("folder-preserving mbox missing: %v", err)
+	}
+}
