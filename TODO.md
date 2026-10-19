@@ -11,7 +11,7 @@ source file.
 
 - [ ] Establish a bounded healthy-PST/OST indexed-export baseline independent
   of native recovery. Verify folder/message/attachment counts and checksums;
-  document `go-pst` limitations without treating it as a recovery oracle.
+  document `go-pst` limitations without treating it as a recovery reference.
 
 ### Next
 
@@ -24,7 +24,7 @@ source file.
 ### Later
 
 - [ ] Validate additional real OST samples and compression/encryption variants.
-- [ ] Consider an external, licence-reviewed comparison oracle such as libpff.
+- [ ] Consider an external, licence-reviewed comparison reference such as libpff.
 - [ ] Keep PST/OST generation outside the Go runtime.
 
 The sections below are reference notes and evidence, not a second task queue.
@@ -56,7 +56,7 @@ The sections below are reference notes and evidence, not a second task queue.
   inline attachments, stable MIME boundaries, and a SHA-256 manifest.
 - [ ] Add an optional external PST builder for controlled fixtures. Keep it
   outside the OSTOM runtime and validate generated PSTs with independent
-  readers; Outlook is an optional compatibility oracle, not a prerequisite.
+  readers; Outlook is an optional compatibility reference, not a prerequisite.
 - [ ] Do not implement a PST writer in Go as part of OSTOM. The existing Go
   writer dependency is not a reliable generator; PST creation is a separate
   tool concern and must not block OST recovery work.
@@ -167,7 +167,7 @@ reliable original folder path.
 
 - [ ] Inspect all stores in an Outlook profile and identify local candidates
   from evidence without claiming server absence.
-- [ ] Add optional, licence-reviewed libpff comparison as an oracle; never
+- [ ] Add optional, licence-reviewed libpff comparison as a reference; never
   copy it into the MIT core or silently merge its results.
 - [ ] Add attachment duplicate analysis and largest-item summaries once the
   manifest supplies stable identities.
