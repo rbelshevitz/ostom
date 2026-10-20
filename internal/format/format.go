@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -176,6 +177,13 @@ func StreamIndexedPayload(name string, h Header, fileSize int64, bid uint64, max
 	return streamPayloadFromSource(source, bid, maxBlocks, maxBytes, write)
 }
 
+func headerPSTFormat(h Header) disk.PSTFormat {
+	if h.NDBVersion == 14 || h.NDBVersion == 15 {
+		return disk.FormatANSI
+	}
+	return disk.FormatUnicode
+}
+
 // CollectIndexedPayloadBlocks returns the logical data-tree leaves as
 // separate chunks. HN parsing needs these page boundaries; concatenating them
 // would lose the HNPAGEHDR/HNBITMAPHDR boundaries.
@@ -202,6 +210,7 @@ type IndexedPropertyContextResult struct {
 // result. Messages are ready for a later exporter, while errors retain only a
 // capped sample for the final report.
 type IndexedRecoveredMessageScan struct {
+	Mode           string               `json:"mode"`
 	NodesAttempted int                  `json:"nodes_attempted"`
 	Messages       []RecoveredMessage   `json:"messages,omitempty"`
 	Rejected       int                  `json:"rejected"`
@@ -437,7 +446,7 @@ func CollectIndexedRecoveredMessagesWithProgress(name string, h Header, fileSize
 // cap for attachment payloads. It preserves the legacy entry point for
 // callers that intentionally want one shared cap.
 func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples int, progress func(done, total int)) (IndexedRecoveredMessageScan, error) {
-	scan := IndexedRecoveredMessageScan{Status: "not applicable"}
+	scan := IndexedRecoveredMessageScan{Mode: "indexed", Status: "not applicable"}
 	if maxNodes <= 0 || maxBlocks <= 0 || maxBytes == 0 || maxRecords <= 0 || maxMessages <= 0 || maxBodyBytes <= 0 || maxAttachmentBytes <= 0 || maxErrorSamples < 0 {
 		return scan, fmt.Errorf("native recovery limits must be positive")
 	}
@@ -450,6 +459,10 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		_ = collector.Close()
 		scan.Status = "BBT locations unavailable"
 		return scan, nil
+	}
+	if len(nbt.nodeBIDs) == 0 && nbt.Status != "valid" {
+		_ = collector.Close()
+		return CollectSalvagedMessagesFromBBT(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress)
 	}
 	seen := make(map[uint64]bool)
 	folderPaths, hierarchy, folderErrors := collectIndexedFolderPaths(name, h, fileSize, nbt.nodeBIDs, maxBlocks, maxBytes, maxRecords, maxErrorSamples)
@@ -552,6 +565,76 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 		scan.LimitReached = true
 	}
 	scan.Status = "completed"
+	return scan, nil
+}
+
+// CollectSalvagedMessagesFromBBT attempts message recovery without trusting
+// the NBT. It is deliberately separate from the indexed path: BBT-only
+// candidates have no reliable NID, parent folder, or attachment tree.
+// Synthetic NIDs are used only as stable local identities in the result.
+func CollectSalvagedMessagesFromBBT(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples int, progress func(done, total int)) (IndexedRecoveredMessageScan, error) {
+	scan := IndexedRecoveredMessageScan{Mode: "salvage", Status: "not applicable"}
+	if maxNodes <= 0 || maxBlocks <= 0 || maxBytes == 0 || maxRecords <= 0 || maxMessages <= 0 || maxBodyBytes <= 0 || maxErrorSamples < 0 {
+		return scan, fmt.Errorf("salvage recovery limits must be positive")
+	}
+	_, bbt := WalkIndexTrees(name, h, fileSize, 100000, 64)
+	if bbt.blockLocations == nil {
+		scan.Status = "BBT locations unavailable"
+		return scan, nil
+	}
+	bids := make([]uint64, 0, len(bbt.blockLocations))
+	for bid := range bbt.blockLocations {
+		bids = append(bids, bid)
+	}
+	sort.Slice(bids, func(i, j int) bool { return bids[i] < bids[j] })
+	if len(bids) > maxNodes {
+		bids = bids[:maxNodes]
+		scan.LimitReached = true
+	}
+	collector, err := NewRecoveredMessageCollector(maxMessages, maxBodyBytes)
+	if err != nil {
+		return scan, err
+	}
+	if progress != nil {
+		progress(0, len(bids))
+	}
+	for index, bid := range bids {
+		scan.NodesAttempted++
+		// A synthetic normal-message NID preserves the fact that the source
+		// identity is unavailable without pretending the BBT supplied one.
+		nid := (bid &^ 0x1F) | 0x04
+		result, parseErr := ParseIndexedPropertyContext(name, h, fileSize, bid, maxBlocks, maxBytes, maxRecords)
+		if parseErr == nil {
+			added, addErr := collector.AddResolvedProperties(nid, bid, result.ResolvedProperties)
+			if addErr != nil {
+				scan.addError(fmt.Errorf("salvage BID 0x%X: %w", bid, addErr), maxErrorSamples)
+			} else if !added {
+				// The collector owns rejection and duplicate accounting; copy its
+				// totals below instead of counting this candidate a second time.
+			}
+			for _, resolutionErr := range result.ResolutionErrors {
+				scan.addError(fmt.Errorf("salvage BID 0x%X: %s", bid, resolutionErr), maxErrorSamples)
+			}
+		} else {
+			scan.Rejected++
+			if len(scan.ErrorSamples) < maxErrorSamples {
+				scan.ErrorSamples = append(scan.ErrorSamples, fmt.Sprintf("salvage BID 0x%X: %v", bid, parseErr))
+			}
+			scan.Errors++
+		}
+		if progress != nil {
+			progress(index+1, len(bids))
+		}
+	}
+	scan.Messages = collector.Messages()
+	_, rejected, duplicates, limited := collector.Stats()
+	scan.Rejected += rejected
+	scan.Duplicates = duplicates
+	if limited {
+		scan.LimitReached = true
+	}
+	scan.Cleanup = collector.Close
+	scan.Status = "salvage-completed"
 	return scan, nil
 }
 
@@ -723,6 +806,7 @@ type indexedPayloadSource struct {
 	fileSize  int64
 	method    disk.CryptMethod
 	pageSize  int
+	format    disk.PSTFormat
 }
 
 func (s indexedPayloadSource) Payload(bid uint64) ([]byte, error) {
@@ -862,7 +946,7 @@ func streamPayloadFromSource(source payloadSource, bid uint64, maxBlocks int, ma
 				return fmt.Errorf("BID 0x%X has unsupported extended block level %d", current, level)
 			}
 		}
-		extended, err := parseExtendedBlockBounded(payload, disk.FormatUnicode, level)
+		extended, err := parseExtendedBlockBounded(payload, sourcePSTFormat(source), level)
 		if err != nil {
 			return fmt.Errorf("BID 0x%X: %w", current, err)
 		}
@@ -893,6 +977,27 @@ func streamPayloadFromSource(source payloadSource, bid uint64, maxBlocks int, ma
 func sourceIs4K(source payloadSource) bool {
 	indexed, ok := source.(indexedPayloadSource)
 	return ok && indexed.pageSize == 4096
+}
+
+type formattedPayloadSource interface {
+	payloadSource
+	PSTFormat() disk.PSTFormat
+}
+
+func sourcePSTFormat(source payloadSource) disk.PSTFormat {
+	if formatted, ok := source.(formattedPayloadSource); ok {
+		return formatted.PSTFormat()
+	}
+	// Keep the historical default for small extension/test sources that only
+	// implement Payload and therefore do not expose a file variant.
+	return disk.FormatUnicode
+}
+
+func (s indexedPayloadSource) PSTFormat() disk.PSTFormat {
+	if s.format == disk.FormatANSI {
+		return disk.FormatANSI
+	}
+	return disk.FormatUnicode
 }
 
 func parseExtendedBlockBounded(data []byte, format disk.PSTFormat, expectedLevel byte) (*disk.ExtendedBlock, error) {
@@ -987,7 +1092,7 @@ func WalkIndexedSubnodeTree(name string, h Header, fileSize int64, rootBID uint6
 		return entries, result, err
 	}
 	defer f.Close()
-	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize}
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize, format: headerPSTFormat(h)}
 	return walkSubnodeTreeFromSourceWithPageSize(source, rootBID, maxBlocks, h.PageSize)
 }
 

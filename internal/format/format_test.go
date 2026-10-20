@@ -195,6 +195,36 @@ func TestStreamPayloadFromSourceXBlockAndXXBlockSmoke(t *testing.T) {
 	}
 }
 
+type ansiPayloadSource struct{ testPayloadSource }
+
+func (ansiPayloadSource) PSTFormat() disk.PSTFormat { return disk.FormatANSI }
+
+func makeTestANSIExtendedBlock(level byte, bids ...uint64) []byte {
+	payload := make([]byte, 8+len(bids)*4)
+	payload[0] = 0x01
+	payload[1] = level
+	binary.LittleEndian.PutUint16(payload[2:4], uint16(len(bids)))
+	for i, bid := range bids {
+		binary.LittleEndian.PutUint32(payload[8+i*4:], uint32(bid))
+	}
+	return payload
+}
+
+func TestStreamPayloadFromSourceUsesANSIIdentifiers(t *testing.T) {
+	source := ansiPayloadSource{testPayloadSource{
+		0x100: []byte("ansi"),
+		0x102: makeTestANSIExtendedBlock(1, 0x100),
+	}}
+	var got bytes.Buffer
+	result, err := streamPayloadFromSource(source, 0x102, 8, 64, func(chunk []byte) error {
+		_, err := got.Write(chunk)
+		return err
+	})
+	if err != nil || got.String() != "ansi" || result.BytesProduced != 4 {
+		t.Fatalf("unexpected ANSI XBLOCK stream: %q %+v err=%v", got.String(), result, err)
+	}
+}
+
 func TestInflatePFF4KBlock(t *testing.T) {
 	plain := bytes.Repeat([]byte("local-only message body "), 200)
 	var compressed bytes.Buffer
@@ -227,6 +257,37 @@ func TestInflatePFF4KBlock(t *testing.T) {
 	got, err = inflatePFFBlock(zlibCompressed.Bytes(), len(plain))
 	if err != nil || !bytes.Equal(got, plain) {
 		t.Fatalf("unexpected zlib-wrapped 4 KiB inflate: bytes=%d err=%v", len(got), err)
+	}
+}
+
+func TestInflatePFF4KBlockRejectsTruncatedStream(t *testing.T) {
+	plain := bytes.Repeat([]byte("truncated compressed payload "), 64)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	truncated := compressed.Bytes()[:compressed.Len()/2]
+	if _, err := inflatePFFBlock(truncated, len(plain)); err == nil {
+		t.Fatal("truncated compressed payload was accepted")
+	}
+}
+
+func TestStreamPayloadHonorsByteLimit(t *testing.T) {
+	source := testPayloadSource{0x100: bytes.Repeat([]byte("x"), 32)}
+	var got bytes.Buffer
+	result, err := streamPayloadFromSource(source, 0x100, 2, 7, func(chunk []byte) error {
+		_, err := got.Write(chunk)
+		return err
+	})
+	if err != nil || got.Len() != 7 || result.BytesProduced != 7 || !result.Truncated {
+		t.Fatalf("unexpected bounded payload: bytes=%d result=%+v err=%v", got.Len(), result, err)
 	}
 }
 
@@ -1282,6 +1343,55 @@ func TestCollectIndexedRecoveredMessagesOnCorpus(t *testing.T) {
 		if message.BID == 0 || len(message.Attachments) > 16 {
 			t.Fatalf("invalid native recovered message: %+v", message)
 		}
+	}
+}
+
+func TestCollectIndexedRecoveredMessagesFallsBackToBBTSalvage(t *testing.T) {
+	source := filepath.Join("..", "..", ".gomodcache", "github.com", "useti", "go-pst", "v6@v6.0.8", "data", "support.pst")
+	if _, err := os.Stat(source); err != nil {
+		t.Skip("go-pst corpus not available")
+	}
+	path := filepath.Join(t.TempDir(), "broken-nbt.pst")
+	in, err := os.Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.Create(path)
+	if err != nil {
+		in.Close()
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		in.Close()
+		out.Close()
+		t.Fatal(err)
+	}
+	if err := in.Close(); err != nil {
+		out.Close()
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unicode PFF stores the NBT root at header offset 224. BBT remains intact.
+	if _, err := file.WriteAt(make([]byte, 8), 224); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h := ReadHeader(path)
+	scan, err := CollectIndexedRecoveredMessages(path, h, fileSizeForTest(t, path), 8, 32, 1<<20, 128, 16, 1<<20, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan.Mode != "salvage" || scan.Status != "salvage-completed" || scan.NodesAttempted > 8 {
+		t.Fatalf("unexpected BBT salvage result: %+v", scan)
 	}
 }
 

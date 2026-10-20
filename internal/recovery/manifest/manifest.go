@@ -36,7 +36,20 @@ type Record struct {
 type Document struct {
 	Version int      `json:"version"`
 	Source  string   `json:"source"`
+	Summary Summary  `json:"summary"`
 	Records []Record `json:"records"`
+}
+
+// Summary is a small, stable projection of the recovery inventory. It keeps
+// frontends from loading and classifying the complete record list just to
+// render the outcome of a large recovery run.
+type Summary struct {
+	Total       int                       `json:"total"`
+	Messages    int                       `json:"messages"`
+	Attachments int                       `json:"attachments"`
+	ByStatus    map[string]int            `json:"by_status,omitempty"`
+	ByKind      map[string]map[string]int `json:"by_kind,omitempty"`
+	Orphans     int                       `json:"orphans,omitempty"`
 }
 
 // Write creates matching deterministic JSON and CSV recovery manifests.
@@ -55,10 +68,35 @@ func Write(outputDir, source string, records []Record) error {
 	sort.SliceStable(records, func(i, j int) bool {
 		return recordKey(records[i]) < recordKey(records[j])
 	})
-	if err := writeJSON(filepath.Join(outputDir, "recovery-manifest.json"), Document{Version: 1, Source: source, Records: records}); err != nil {
+	if err := writeJSON(filepath.Join(outputDir, "recovery-manifest.json"), Document{Version: 1, Source: source, Summary: summarize(records), Records: records}); err != nil {
 		return err
 	}
 	return writeCSV(filepath.Join(outputDir, "recovery-manifest.csv"), records)
+}
+
+func summarize(records []Record) Summary {
+	summary := Summary{Total: len(records), ByStatus: make(map[string]int), ByKind: make(map[string]map[string]int)}
+	for _, record := range records {
+		switch record.Kind {
+		case "message":
+			summary.Messages++
+		case "attachment":
+			summary.Attachments++
+		}
+		status := record.Status
+		if status == "" {
+			status = "unknown"
+		}
+		summary.ByStatus[status]++
+		if summary.ByKind[record.Kind] == nil {
+			summary.ByKind[record.Kind] = make(map[string]int)
+		}
+		summary.ByKind[record.Kind][status]++
+		if record.Kind == "message" && record.FolderPath == "" {
+			summary.Orphans++
+		}
+	}
+	return summary
 }
 
 func recordKey(record Record) string {

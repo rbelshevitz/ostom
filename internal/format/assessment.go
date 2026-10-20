@@ -6,12 +6,13 @@ import "fmt"
 // evidence. It does not diagnose the storage device or claim that unreadable
 // bytes were caused by bad sectors.
 type IntegrityAssessment struct {
-	Classification string   `json:"classification"`
-	DeepRecovery   string   `json:"deep_recovery"`
-	Confidence     string   `json:"confidence"`
-	Summary        string   `json:"summary"`
-	Reasons        []string `json:"reasons,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
+	Classification  string   `json:"classification"`
+	DeepRecovery    string   `json:"deep_recovery"`
+	RecoveryOutlook string   `json:"recovery_outlook"`
+	Confidence      string   `json:"confidence"`
+	Summary         string   `json:"summary"`
+	Reasons         []string `json:"reasons,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
 }
 
 // AssessFile turns header, allocation, and index-root evidence into a
@@ -19,12 +20,13 @@ type IntegrityAssessment struct {
 // warnings until stronger evidence agrees with them.
 func AssessFile(h Header, roots IndexRootScan, fileSize int64) IntegrityAssessment {
 	a := IntegrityAssessment{
-		Classification: "healthy",
-		DeepRecovery:   "not_needed",
-		Confidence:     "medium",
+		Classification:  "healthy",
+		DeepRecovery:    "not_needed",
+		RecoveryOutlook: "good",
+		Confidence:      "medium",
 	}
 	if !h.OK {
-		return assessment("unknown", "required", "high", "Файл не распознан как поддерживаемый OST/PST.", "header is not valid")
+		return assessment("unknown", "required", "high", "limited", "Файл не распознан как поддерживаемый OST/PST.", "header is not valid")
 	}
 
 	actual := uint64(0)
@@ -45,8 +47,15 @@ func AssessFile(h Header, roots IndexRootScan, fileSize int64) IntegrityAssessme
 	}
 
 	rootFailures := 0
-	for _, status := range []string{roots.NBT, roots.BBT} {
+	for _, root := range []struct {
+		name   string
+		status string
+	}{{"NBT", roots.NBT}, {"BBT", roots.BBT}} {
+		name, status := root.name, root.status
 		if status == "" || status == "valid" || status == "not applicable" || status == "CRC invalid" {
+			if status == "CRC invalid" {
+				a.Warnings = append(a.Warnings, name+" root CRC is invalid")
+			}
 			continue
 		}
 		rootFailures++
@@ -76,11 +85,16 @@ func AssessFile(h Header, roots IndexRootScan, fileSize int64) IntegrityAssessme
 	} else {
 		a.Summary = "Обнаружены отдельные структурные предупреждения; дополнительное восстановление может найти больше данных."
 	}
+	if a.DeepRecovery == "required" {
+		a.RecoveryOutlook = "limited"
+	} else if a.Classification != "healthy" || len(a.Warnings) > 0 {
+		a.RecoveryOutlook = "uncertain"
+	}
 	return a
 }
 
-func assessment(classification, recovery, confidence, summary, reason string) IntegrityAssessment {
-	a := IntegrityAssessment{Classification: classification, DeepRecovery: recovery, Confidence: confidence, Summary: summary}
+func assessment(classification, recovery, confidence, outlook, summary, reason string) IntegrityAssessment {
+	a := IntegrityAssessment{Classification: classification, DeepRecovery: recovery, RecoveryOutlook: outlook, Confidence: confidence, Summary: summary}
 	if reason != "" {
 		a.Reasons = []string{reason}
 	}

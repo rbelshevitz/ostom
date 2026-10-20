@@ -17,6 +17,7 @@ import (
 // Report describes the handoff from native collection to mbox export.
 type Report struct {
 	Backend               string            `json:"backend"`
+	EMLMode               string            `json:"eml_mode"`
 	Attempted             int               `json:"attempted"`
 	Written               int               `json:"written"`
 	Incomplete            int               `json:"incomplete"`
@@ -42,9 +43,11 @@ type Limits struct {
 	MaxBodyBytes       int
 	MaxAttachmentBytes int
 	MaxErrorSamples    int
+	WriteEML           bool
 }
 
 type PipelineReport struct {
+	Mode       string                             `json:"mode"`
 	Collection format.IndexedRecoveredMessageScan `json:"collection"`
 	Export     Report                             `json:"export"`
 }
@@ -72,7 +75,7 @@ func RecoverAndExportWithProgress(name, root string, h format.Header, fileSize i
 		limits.MaxErrorSamples,
 		progress,
 	)
-	report := PipelineReport{Collection: collection}
+	report := PipelineReport{Mode: collection.Mode, Collection: collection}
 	if err != nil {
 		if collection.Cleanup != nil {
 			_ = collection.Cleanup()
@@ -84,7 +87,8 @@ func RecoverAndExportWithProgress(name, root string, h format.Header, fileSize i
 			_ = collection.Cleanup()
 		}
 	}()
-	report.Export, err = ExportWithProgress(root, collection.Messages, nil)
+	report.Export, err = ExportWithProgressMode(root, collection.Messages, nil, limits.WriteEML)
+	markSalvageManifest(&report)
 	return report, err
 }
 
@@ -100,7 +104,7 @@ func RecoverAndExportWithPhaseProgress(name, root string, h format.Header, fileS
 			}
 		},
 	)
-	report := PipelineReport{Collection: collection}
+	report := PipelineReport{Mode: collection.Mode, Collection: collection}
 	if err != nil {
 		if collection.Cleanup != nil {
 			_ = collection.Cleanup()
@@ -112,12 +116,23 @@ func RecoverAndExportWithPhaseProgress(name, root string, h format.Header, fileS
 			_ = collection.Cleanup()
 		}
 	}()
-	report.Export, err = ExportWithProgress(root, collection.Messages, func(done, total int) {
+	report.Export, err = ExportWithProgressMode(root, collection.Messages, func(done, total int) {
 		if progress != nil {
 			progress("writing native recovery output", done, total)
 		}
-	})
+	}, limits.WriteEML)
+	markSalvageManifest(&report)
 	return report, err
+}
+
+func markSalvageManifest(report *PipelineReport) {
+	if report == nil || report.Mode != "salvage" {
+		return
+	}
+	for index := range report.Export.ManifestRecords {
+		report.Export.ManifestRecords[index].Source = "native-salvage"
+		report.Export.ManifestRecords[index].Route = "native-salvage"
+	}
 }
 
 func attachmentLimit(limits Limits) int {
@@ -137,7 +152,17 @@ func Export(root string, messages []format.RecoveredMessage) (Report, error) {
 // ExportWithProgress writes mbox and per-message EML output. Each callback
 // checkpoint is one message attempt, including partial and failed output.
 func ExportWithProgress(root string, messages []format.RecoveredMessage, progress func(done, total int)) (Report, error) {
-	report := Report{Backend: "native-recovered"}
+	return ExportWithProgressMode(root, messages, progress, true)
+}
+
+// ExportWithProgressMode keeps mbox as the primary output and optionally
+// writes the per-message EML mirror. The legacy function above preserves the
+// original library behavior for callers that explicitly use it.
+func ExportWithProgressMode(root string, messages []format.RecoveredMessage, progress func(done, total int), includeEML bool) (Report, error) {
+	report := Report{Backend: "native-recovered", EMLMode: "none"}
+	if includeEML {
+		report.EMLMode = "all"
+	}
 	writer, err := mbox.New(root, 0)
 	if err != nil {
 		return report, fmt.Errorf("create native export: %w", err)
@@ -187,6 +212,17 @@ func ExportWithProgress(root string, messages []format.RecoveredMessage, progres
 			continue
 		}
 		report.Written++
+		if !includeEML {
+			status := "recovered"
+			if message.Incomplete {
+				status = "partial"
+			}
+			recordNativeManifest(&report, root, message, status, "", 0, "", nil)
+			if progress != nil {
+				progress(index+1, len(messages))
+			}
+			continue
+		}
 		raw, renderErr := writer.RenderWithSource(
 			message.Subject,
 			message.Sender,

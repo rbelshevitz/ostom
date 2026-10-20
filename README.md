@@ -98,7 +98,7 @@ attachments are associated only when the file provides explicit evidence.
 ## CLI syntax
 
 ```text
-ostom [--json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost
+ostom [--json] [--check] [--progress-json] [--eml] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost
 ```
 
 ## Build and run
@@ -150,6 +150,9 @@ Get-FileHash .\ostom-v0.2.5-windows-amd64.zip -Algorithm SHA256
 The main options are:
 
 - `--json` — machine-readable report.
+- `--check` — run only the fast structural check; do not export messages or attachments.
+- `--progress-json` — write one JSON progress event per line to stderr for a GUI or automation.
+- `--eml` — also write one `.eml` file per indexed message. Without it, normal export writes only mbox to avoid doubling disk usage.
 - `--output-dir DIR` — directory for `ostom-report.json`; defaults to
   `--export-dir` when set. It does not check free space.
 - `--export-dir DIR` — export indexed readable mail into a Thunderbird `Local Folders` tree.
@@ -158,6 +161,16 @@ The main options are:
   when the file assessment recommends it.
 - `--quiet` — suppress progress messages on stderr; warnings and the final
   report are still printed.
+
+Progress events include `done`, `total`, `total_known`, `unit`, and `basis`.
+They describe the current phase rather than pretending to be an exact
+percentage of the PST/OST byte size; when the total is unknown,
+`total_known=false`.
+
+On Windows, build the compact `ostom-gui.exe` shell. It selects a PST/OST,
+runs the cross-platform core as a child process, shows live progress, and
+presents findings for structure, messages, attachments, and recovery outlook.
+Watchdogs and partial output remain visible if a file is problematic.
 
 ### Inspection and recovery
 
@@ -208,7 +221,7 @@ ostom --export-dir E:\recovered file.ost
 
 Attachments are associated through the message attachment table and copied through `go-pst`'s streaming attachment writer. Inline attachments retain `Content-ID` when available. The exporter writes no `.msf` files.
 
-The same export also creates `OSTOM EML`, a safe per-message fallback tree for
+With `--eml`, the export also creates `OSTOM EML`, a safe per-message tree for
 readable indexed messages. EML files are streamed alongside mbox output and
 are atomically finalized only after the complete message has been read.
 
@@ -230,8 +243,10 @@ an unbounded in-memory list.
 It reports file/header recognition, parser/index access, folder and message counts, unread count, attachment count, declared attachment bytes, and errors encountered while walking the physical tree.
 
 During export, the CLI reports indexed message counts and native recovery phases
-to stderr. `--quiet` suppresses this progress output. The CLI does not impose a
-process-wide memory cap or an idle timeout.
+to stderr. `--quiet` suppresses this progress output. Recovery uses explicit
+node, block, byte, record, and message limits. Native and indexed passes run in
+separate worker processes with watchdog timeouts; large files receive more
+native wall time, with an upper bound.
 
 The CLI reports file, folder, message, and attachment counts and errors. See
 [FORMAT](FORMAT.md) for how structural findings are interpreted.

@@ -23,6 +23,9 @@ func TestWriteProducesSortedEquivalentManifests(t *testing.T) {
 	if !strings.Contains(string(jsonData), "\"version\": 1") || strings.Index(string(jsonData), "\"indexed\"") > strings.Index(string(jsonData), "\"native\"") || !strings.Contains(string(jsonData), "\"errors\": [\n        \"a\",\n        \"z\"") {
 		t.Fatalf("unexpected deterministic JSON manifest: %s", jsonData)
 	}
+	if !strings.Contains(string(jsonData), "\"total\": 2") || !strings.Contains(string(jsonData), "\"messages\": 1") || !strings.Contains(string(jsonData), "\"attachments\": 1") || !strings.Contains(string(jsonData), "\"partial\": 1") || !strings.Contains(string(jsonData), "\"recovered\": 1") || !strings.Contains(string(jsonData), "\"message\": {\n        \"recovered\": 1") || !strings.Contains(string(jsonData), "\"orphans\": 1") {
+		t.Fatalf("unexpected manifest summary: %s", jsonData)
+	}
 	csvData, err := os.ReadFile(filepath.Join(dir, "recovery-manifest.csv"))
 	if err != nil {
 		t.Fatal(err)

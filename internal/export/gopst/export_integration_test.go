@@ -58,6 +58,24 @@ func TestExportFixturePreservesHierarchy(t *testing.T) {
 	}
 }
 
+func TestExportFixtureMboxOnlyDoesNotDuplicateEML(t *testing.T) {
+	input := filepath.Join("..", "..", "..", "testdata", "fixtures", "sample.ost")
+	if _, err := os.Stat(input); err != nil {
+		t.Skipf("local integration fixture unavailable: %v", err)
+	}
+	out := t.TempDir()
+	report, err := ExportWithProgressMode(input, out, nil, 0, false, nil, EMLNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Messages == 0 || report.EMLWritten != 0 {
+		t.Fatalf("unexpected mbox-only report: %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(out, "OSTOM EML")); !os.IsNotExist(err) {
+		t.Fatalf("mbox-only export created EML tree: err=%v", err)
+	}
+}
+
 func TestExportCorpusPreservesAttachments(t *testing.T) {
 	input := filepath.Join("..", "..", "..", ".gomodcache", "github.com", "useti", "go-pst", "v6@v6.0.8", "data", "support.pst")
 	if _, err := os.Stat(input); err != nil {
