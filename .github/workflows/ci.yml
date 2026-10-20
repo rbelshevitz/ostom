@@ -30,7 +30,6 @@ jobs:
         with:
           dotnet-version: '8.0.x'
           architecture: x64
-          check-latest: false
 
       - name: Check formatting
         shell: pwsh
@@ -88,7 +87,6 @@ jobs:
         with:
           dotnet-version: '8.0.x'
           architecture: x64
-          check-latest: false
 
       - name: Build release binaries
         shell: pwsh
