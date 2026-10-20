@@ -1,2 +1,10 @@
 gui/Ostom.Gui/bin/
 gui/Ostom.Gui/obj/
+.gobuildcache/
+.gomodcache/
+.gopath/
+/ostom.exe
+/ostom-fixture.exe
+/testdata/export-*/
+/testdata/fixtures/
+/testdata/external/*.ost
