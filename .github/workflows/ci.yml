@@ -47,6 +47,8 @@ jobs:
       - name: Build CLI binaries
         shell: pwsh
         run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
           go build -o "$env:RUNNER_TEMP\ostom.exe" .\cmd\ostom
           go build -o "$env:RUNNER_TEMP\ostom-fixture.exe" .\cmd\ostom-fixture
 
@@ -70,6 +72,8 @@ jobs:
       - name: Build release binaries
         shell: pwsh
         run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
           $archive = "ostom-$env:GITHUB_REF_NAME-windows-amd64.zip"
           $staging = Join-Path $env:RUNNER_TEMP "ostom-windows-amd64"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
