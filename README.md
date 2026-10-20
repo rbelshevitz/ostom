@@ -167,10 +167,11 @@ They describe the current phase rather than pretending to be an exact
 percentage of the PST/OST byte size; when the total is unknown,
 `total_known=false`.
 
-On Windows, build the compact `ostom-gui.exe` shell. It selects a PST/OST,
-runs the cross-platform core as a child process, shows live progress, and
-presents findings for structure, messages, attachments, and recovery outlook.
-Watchdogs and partial output remain visible if a file is problematic.
+On Windows 10/11 x64, build the self-contained `ostom-gui.exe` shell (about
+68 MB); no separate .NET Desktop Runtime installation is required. It selects
+a PST/OST, runs the cross-platform core as a child process, shows live progress,
+and presents findings for structure, messages, attachments, and recovery
+outlook. Watchdogs and partial output remain visible if a file is problematic.
 
 ### Inspection and recovery
 

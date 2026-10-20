@@ -63,7 +63,7 @@ jobs:
         shell: pwsh
         run: |
           $guiOut = Join-Path $env:RUNNER_TEMP "ostom-gui"
-          dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $guiOut
+          dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $guiOut
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
   release:
@@ -99,7 +99,7 @@ jobs:
           $staging = Join-Path $env:RUNNER_TEMP "ostom-windows-amd64"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           go build -trimpath -o "$staging\ostom.exe" .\cmd\ostom
-          dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $staging
+          dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $staging
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
           Compress-Archive -Path "$staging\ostom.exe", "$staging\ostom-gui.exe" -DestinationPath "$env:RUNNER_TEMP\$archive" -Force
 
@@ -133,7 +133,8 @@ jobs:
 
           Download ``ostom-$env:GITHUB_REF_NAME-windows-amd64.zip`` and extract
           ``ostom.exe`` and ``ostom-gui.exe``. The archive is for 64-bit Windows
-          (amd64); the GUI requires the .NET 8 Desktop Runtime.
+          (amd64); the GUI is self-contained and does not require a separate
+          .NET Desktop Runtime installation.
 
           ### Important limitations
 
