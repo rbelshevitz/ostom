@@ -52,6 +52,13 @@ jobs:
           go build -o "$env:RUNNER_TEMP\ostom.exe" .\cmd\ostom
           go build -o "$env:RUNNER_TEMP\ostom-fixture.exe" .\cmd\ostom-fixture
 
+      - name: Build Windows GUI
+        shell: pwsh
+        run: |
+          $guiOut = Join-Path $env:RUNNER_TEMP "ostom-gui"
+          dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $guiOut
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
+
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -78,7 +85,9 @@ jobs:
           $staging = Join-Path $env:RUNNER_TEMP "ostom-windows-amd64"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           go build -trimpath -o "$staging\ostom.exe" .\cmd\ostom
-          Compress-Archive -Path "$staging\ostom.exe" -DestinationPath "$env:RUNNER_TEMP\$archive" -Force
+          dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $staging
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
+          Compress-Archive -Path "$staging\ostom.exe", "$staging\ostom-gui.exe" -DestinationPath "$env:RUNNER_TEMP\$archive" -Force
 
       - name: Create GitHub Release
         shell: pwsh
@@ -109,7 +118,8 @@ jobs:
           ### Download
 
           Download ``ostom-$env:GITHUB_REF_NAME-windows-amd64.zip`` and extract
-          ``ostom.exe``. The archive is for 64-bit Windows (amd64).
+          ``ostom.exe`` and ``ostom-gui.exe``. The archive is for 64-bit Windows
+          (amd64); the GUI requires the .NET 8 Desktop Runtime.
 
           ### Important limitations
 
