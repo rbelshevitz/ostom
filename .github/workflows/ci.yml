@@ -26,9 +26,11 @@ jobs:
           cache: true
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
+          architecture: x64
+          check-latest: false
 
       - name: Check formatting
         shell: pwsh
@@ -82,9 +84,11 @@ jobs:
           cache: true
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
+          architecture: x64
+          check-latest: false
 
       - name: Build release binaries
         shell: pwsh
