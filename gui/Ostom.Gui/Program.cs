@@ -28,6 +28,8 @@ internal sealed class MainForm : Form
     private readonly Button cancel = new();
     private readonly ProgressBar progress = new();
     private readonly RichTextBox result = new();
+    private readonly Label statusText = new();
+    private readonly Label progressText = new();
     private Process? child;
     private CancellationTokenSource? cancellation;
 
@@ -37,81 +39,136 @@ internal sealed class MainForm : Form
     {
         Text = T("OSTOM — восстановление PST/OST", "OSTOM — PST/OST recovery");
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(780, 470);
-        MinimumSize = new Size(680, 400);
+        ClientSize = new Size(820, 550);
+        MinimumSize = new Size(700, 460);
+        MaximizeBox = false;
+        SizeGripStyle = SizeGripStyle.Show;
         Font = new Font("Segoe UI", 9F);
+        BackColor = Color.FromArgb(236, 239, 242);
+        ForeColor = Color.FromArgb(32, 39, 48);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         BuildLayout();
     }
 
     private void BuildLayout()
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 3, RowCount = 8 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        const int actionButtonWidth = 128;
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12, 10, 12, 8), ColumnCount = 1, RowCount = 3, BackColor = BackColor };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 174));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         Controls.Add(layout);
 
-        layout.Controls.Add(new Label { Text = T("Источник PST/OST", "PST/OST source file"), Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 0);
+        var inputGroup = new GroupBox { Text = T("Источник и экспорт", "Source and export"), Dock = DockStyle.Fill, Padding = new Padding(10, 8, 10, 8), ForeColor = Color.FromArgb(70, 78, 87) };
+        var inputLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, BackColor = BackColor };
+        inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116));
+        inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, actionButtonWidth));
+        inputLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
+        inputLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
+        inputLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        inputGroup.Controls.Add(inputLayout);
+        inputLayout.Controls.Add(MakeFieldLabel(T("Исходный файл", "Source file")), 0, 0);
         source.Dock = DockStyle.Fill;
-        layout.Controls.Add(source, 0, 1);
+        source.ReadOnly = true;
+        source.TabStop = false;
+        source.Cursor = Cursors.Default;
+        StyleInput(source);
+        inputLayout.Controls.Add(source, 1, 0);
         var open = MakeActionButton(T("Открыть…", "Open…"));
         open.Click += async (_, _) => await PickSourceAsync();
-        layout.Controls.Add(open, 1, 1);
-        layout.SetColumnSpan(source, 1);
-
-        layout.Controls.Add(new Label { Text = T("Папка экспорта mbox", "mbox export folder"), Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft }, 0, 2);
+        inputLayout.Controls.Add(open, 2, 0);
+        inputLayout.Controls.Add(MakeFieldLabel(T("Папка экспорта", "Export folder")), 0, 1);
         output.Dock = DockStyle.Fill;
-        layout.Controls.Add(output, 0, 3);
+        output.ReadOnly = true;
+        output.TabStop = false;
+        output.Cursor = Cursors.Default;
+        StyleInput(output);
+        inputLayout.Controls.Add(output, 1, 1);
         var folder = MakeActionButton(T("Папка…", "Folder…"));
         folder.Click += (_, _) => PickFolder();
-        layout.Controls.Add(folder, 1, 3);
+        inputLayout.Controls.Add(folder, 2, 1);
 
-        var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Padding = new Padding(0) };
+        var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 1, Padding = new Padding(0, 2, 0, 0) };
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, actionButtonWidth));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, actionButtonWidth));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 8));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, actionButtonWidth));
         eml.Text = T("Дополнительно сохранить EML", "Save individual EML files too");
         eml.AutoSize = false;
         eml.Dock = DockStyle.Fill;
+        eml.Margin = new Padding(0, 2, 0, 0);
         actions.Controls.Add(eml);
         ConfigureActionButton(analyze, T("Анализ", "Analyze"));
         analyze.Click += async (_, _) => { if (!string.IsNullOrWhiteSpace(source.Text)) await AnalyzeAsync(source.Text); };
         actions.Controls.Add(analyze);
         ConfigureActionButton(run, T("Экспорт", "Export"));
+        run.BackColor = Color.FromArgb(31, 102, 130);
+        run.ForeColor = Color.White;
+        run.FlatAppearance.BorderColor = Color.FromArgb(31, 102, 130);
+        run.FlatAppearance.MouseOverBackColor = Color.FromArgb(25, 82, 105);
         run.Click += async (_, _) => await RunAsync();
         actions.Controls.Add(run);
         ConfigureActionButton(cancel, T("Отмена", "Cancel"));
         cancel.Enabled = false;
         cancel.Click += (_, _) => cancellation?.Cancel();
-        actions.Controls.Add(cancel);
-        layout.Controls.Add(actions, 0, 4);
-        layout.SetColumnSpan(actions, 3);
+        actions.Controls.Add(cancel, 4, 0);
+        inputLayout.Controls.Add(actions, 0, 2);
+        inputLayout.SetColumnSpan(actions, 3);
+        layout.Controls.Add(inputGroup, 0, 0);
 
+        var reportGroup = new GroupBox { Text = T("Результат", "Result"), Dock = DockStyle.Fill, Padding = new Padding(10, 8, 10, 8), ForeColor = Color.FromArgb(70, 78, 87) };
+        var reportLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = BackColor };
+        reportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        reportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
+        reportLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        reportGroup.Controls.Add(reportLayout);
+        progressText.Text = T("Выберите исходный файл", "Choose a source file");
+        progressText.Dock = DockStyle.Fill;
+        progressText.ForeColor = Color.FromArgb(91, 102, 115);
+        progressText.TextAlign = ContentAlignment.MiddleLeft;
+        reportLayout.Controls.Add(progressText, 0, 0);
         progress.Dock = DockStyle.Fill;
-        progress.Margin = new Padding(0, 6, 0, 0);
-        progress.MinimumSize = new Size(0, 18);
+        progress.Margin = new Padding(0, 4, 0, 0);
+        progress.MinimumSize = new Size(0, 12);
+        progress.ForeColor = Color.FromArgb(37, 126, 166);
+        progress.BackColor = Color.FromArgb(224, 231, 237);
         progress.Style = ProgressBarStyle.Marquee;
         progress.MarqueeAnimationSpeed = 28;
         progress.Visible = false;
-        layout.Controls.Add(progress, 0, 5);
-        layout.SetColumnSpan(progress, 3);
-
+        reportLayout.Controls.Add(progress, 0, 1);
         result.Dock = DockStyle.Fill;
         result.ReadOnly = true;
-        result.BackColor = SystemColors.Window;
+        result.BackColor = Color.White;
+        result.BorderStyle = BorderStyle.FixedSingle;
+        result.Font = new Font("Segoe UI", 9.5F);
+        result.ForeColor = Color.Black;
+        result.Padding = new Padding(10);
         result.ScrollBars = RichTextBoxScrollBars.Vertical;
-        layout.Controls.Add(result, 0, 6);
-        layout.SetColumnSpan(result, 3);
+        reportLayout.Controls.Add(result, 0, 2);
+        layout.Controls.Add(reportGroup, 0, 1);
+        statusText.Text = T("Ожидаем файл", "Waiting for file");
+        statusText.Dock = DockStyle.Fill;
+        statusText.TextAlign = ContentAlignment.MiddleLeft;
+        statusText.Padding = new Padding(8, 0, 18, 0);
+        statusText.Font = new Font("Segoe UI Semibold", 9F);
+        statusText.BorderStyle = BorderStyle.FixedSingle;
+        statusText.BackColor = Color.FromArgb(232, 242, 236);
+        statusText.ForeColor = Color.FromArgb(55, 100, 76);
+        layout.Controls.Add(statusText, 0, 2);
         FormClosing += (_, _) => { if (child is { HasExited: false }) child.Kill(entireProcessTree: true); };
+    }
+
+    private Label MakeFieldLabel(string text) => new() { Text = text, Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, ForeColor = Color.Black, Font = new Font("Segoe UI Semibold", 9F) };
+
+    private static void StyleInput(TextBox box)
+    {
+        box.BorderStyle = BorderStyle.FixedSingle;
+        box.BackColor = Color.White;
+        box.Margin = new Padding(0, 4, 8, 2);
+        box.Font = new Font("Segoe UI", 10F);
     }
 
     private static Button MakeActionButton(string text)
@@ -125,11 +182,18 @@ internal sealed class MainForm : Form
     {
         button.Text = text;
         button.AutoSize = false;
-        button.Dock = DockStyle.Fill;
+        button.Dock = DockStyle.None;
+        button.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         button.Margin = new Padding(3, 1, 3, 1);
         button.MinimumSize = new Size(0, 32);
         button.Height = 32;
         button.Padding = new Padding(8, 0, 8, 0);
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = Color.FromArgb(184, 196, 207);
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(226, 238, 244);
+        button.BackColor = Color.White;
+        button.ForeColor = Color.FromArgb(35, 67, 86);
+        button.Font = new Font("Segoe UI Semibold", 9F);
     }
 
     private async Task PickSourceAsync()
@@ -266,7 +330,7 @@ internal sealed class MainForm : Form
                     progress.Visible = true;
                     progress.Style = ProgressBarStyle.Marquee;
                 }
-                result.Text = total > 0
+                progressText.Text = total > 0
                     ? $"{T("Обработано", "Processed")}: {done} {T("из", "of")} {total}"
                     : $"{T("Обработано", "Processed")}: {done}";
             });
@@ -323,11 +387,29 @@ internal sealed class MainForm : Form
             foreach (var warning in report.Warnings.Where(w => !w.Equals("check-only mode: export was not requested", StringComparison.OrdinalIgnoreCase) && !w.StartsWith("indexed export: indexed worker exceeded", StringComparison.OrdinalIgnoreCase))) text.AppendLine($"{T("Предупреждение", "Warning")}: {warning}");
             foreach (var error in report.Errors) text.AppendLine($"{T("Ошибка", "Error")}: {error}");
             result.Text = text.ToString();
+            var reportStatus = FriendlyStatus(report.Status, report.CheckOnly, indexedTimeout && !fallbackUsed, report.Analysis is not null);
+            if (report.Errors.Count > 0)
+                SetStatus(reportStatus, Color.FromArgb(251, 235, 235), Color.FromArgb(165, 65, 62));
+            else if (report.Warnings.Count > 0 || indexedTimeout)
+                SetStatus(reportStatus, Color.FromArgb(255, 245, 224), Color.FromArgb(145, 91, 28));
+            else
+                SetStatus(reportStatus, Color.FromArgb(232, 242, 236), Color.FromArgb(55, 100, 76));
         }
         catch { result.Text = T("Не удалось прочитать итоговый отчёт CLI.", "Could not read the CLI final report."); }
     }
 
-    private void ShowFriendly(string text) => result.Text = text;
+    private void ShowFriendly(string text)
+    {
+        result.Text = text;
+        SetStatus(text, Color.FromArgb(255, 245, 224), Color.FromArgb(145, 91, 28));
+    }
+
+    private void SetStatus(string text, Color background, Color foreground)
+    {
+        statusText.Text = text;
+        statusText.BackColor = background;
+        statusText.ForeColor = foreground;
+    }
 
     private string FriendlyStatus(string value, bool checkOnly, bool indexedTimeout, bool contentAnalysis = false) => indexedTimeout ? T("Завершено частично", "Completed with limitations") : value switch
     {
@@ -394,6 +476,11 @@ internal sealed class MainForm : Form
         eml.Enabled = !busy;
         cancel.Enabled = busy;
         progress.Visible = busy;
+        progressText.Text = busy ? T("Выполняется операция…", "Operation in progress…") : T("Выберите исходный файл", "Choose a source file");
+        if (busy)
+        {
+            SetStatus(T("Выполняется", "Working"), Color.FromArgb(255, 245, 224), Color.FromArgb(145, 91, 28));
+        }
         UseWaitCursor = busy;
     }
 }

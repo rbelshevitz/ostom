@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
+[![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
 > A mailbox archaeologist for OST/PST files, recovering readable mail and carrying it to your favorite mail app.
 
@@ -167,12 +168,19 @@ They describe the current phase rather than pretending to be an exact
 percentage of the PST/OST byte size; when the total is unknown,
 `total_known=false`.
 
-On Windows 10/11 x64, build the compact framework-dependent `ostom-gui.exe`
-shell. It requires the .NET 8 Desktop Runtime; if it is not installed, download
-it from Microsoft's official .NET site. The GUI selects a PST/OST, runs the
-cross-platform core as a child process, shows live progress, and presents
-findings for structure, messages, attachments, and recovery outlook. Watchdogs
-and partial output remain visible if a file is problematic.
+On Windows 10/11 x64, the project also provides `ostom-gui.exe`, a compact
+graphical interface for the `ostom.exe` recovery CLI. The GUI selects a
+PST/OST, chooses an export folder, runs the core as a child process, shows live
+progress, and presents findings for structure, messages, attachments, and
+recovery outlook. The user-facing build is published as a self-contained
+single-file .NET application, so it does not require a separately installed
+.NET Desktop Runtime. Keep `ostom-gui.exe` and the matching `ostom.exe` in the
+same folder. Watchdogs and partial output remain visible if a file is
+problematic.
+
+The GUI is a front end, not a second recovery engine: recovery and export logic
+remain in the CLI, and the GUI communicates with it through its existing
+arguments and JSON/progress output.
 
 ### Inspection and recovery
 

@@ -8,3 +8,4 @@ gui/Ostom.Gui/obj/
 /testdata/export-*/
 /testdata/fixtures/
 /testdata/external/*.ost
+/testdata/external/*.ostom-export/

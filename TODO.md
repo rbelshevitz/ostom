@@ -29,6 +29,32 @@ source file.
 
 The sections below are reference notes and evidence, not a second task queue.
 
+## .NET GUI — compact utility polish
+
+- [ ] Replace the plain report text with compact result cards for structure,
+  messages, attachments, storage, warnings, and errors.
+- [ ] Keep the main window compact: no decorative hero heading, equal-width
+  file/action buttons, and enough vertical space for the report.
+- [x] Apply a compact Rufus-inspired utility layout: grouped source/export
+  inputs, aligned actions, a dedicated result panel, and a persistent status
+  strip without adding decorative branding.
+- [x] Keep the startup state explicit (`Waiting for file`) and distinguish it
+  from running, completed, warning, partial, cancelled, and failed states.
+- [x] Add a real inline status/info area with text and severity, not color alone;
+  keep technical details behind an optional details view.
+- [ ] Verify the layout at 100%, 125%, 150%, and 200% Windows display scale,
+  including long Russian and English strings.
+- [x] Package `ostom-gui.exe` and the matching `ostom.exe` side by side in a
+  reproducible Release build.
+- [x] Rebuild `ostom.ico` from the canonical PNG with explicit 16×16 through
+  256×256 layers; embed the source icon in the GUI so it is not required as a
+  separate file beside the published EXE.
+- [x] Publish the user-facing Windows package as a self-contained single-file
+  GUI; treat the framework-dependent `ostom-gui.dll` output as an intermediate
+  build layout, not the primary handoff.
+- [ ] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
+  work, failed export, partial recovery, and successful export.
+
 ## Current baseline
 
 - Safe header/index diagnostics for Unicode and detected 4 KiB layouts.
