@@ -23,6 +23,21 @@ func TestNativeExportTimeoutScalesAndCaps(t *testing.T) {
 	}
 }
 
+func TestIndexedExportTimeoutScalesAndCaps(t *testing.T) {
+	if got, want := indexedExportTimeout(0), 10*time.Minute; got != want {
+		t.Fatalf("zero-size indexed timeout = %s, want %s", got, want)
+	}
+	if got, want := indexedExportTimeout(2<<30), 20*time.Minute; got != want {
+		t.Fatalf("2 GiB indexed timeout = %s, want %s", got, want)
+	}
+	if got, want := indexedExportTimeout(100<<30), 2*time.Hour; got != want {
+		t.Fatalf("large-file indexed timeout = %s, want %s", got, want)
+	}
+	if indexedIdleTimeout <= 0 {
+		t.Fatal("indexed idle timeout must be positive")
+	}
+}
+
 func TestExitCodeDistinguishesPartialAndInvalidRuns(t *testing.T) {
 	if got := exitCode(report{Status: "completed"}); got != exitOK {
 		t.Fatalf("completed exit code = %d, want %d", got, exitOK)

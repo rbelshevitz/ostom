@@ -54,6 +54,7 @@ const (
 // remain complete while the JSON report keeps only a finite status sample.
 type MessageStatus struct {
 	Index       int    `json:"index"`
+	Identity    string `json:"identity,omitempty"`
 	Folder      string `json:"folder"`
 	Subject     string `json:"subject,omitempty"`
 	Outcome     string `json:"outcome"` // exported, partial, failed
@@ -92,7 +93,18 @@ func ExportWithProgress(filename, outputDir string, heartbeat func(), expectedMe
 // output policy. EMLAll preserves the historical library behavior; CLI users
 // can choose EMLNone to avoid doubling disk usage on large stores.
 func ExportWithProgressMode(filename, outputDir string, heartbeat func(), expectedMessages int, recoveryMode bool, progress func(done, total int), emlMode EMLMode) (Report, error) {
-	return exportWithHeartbeatMode(filename, outputDir, heartbeat, expectedMessages, recoveryMode, progress, emlMode)
+	return ExportWithProgressModeAndCallback(filename, outputDir, heartbeat, expectedMessages, recoveryMode, progress, emlMode, nil)
+}
+
+// ExportWithProgressModeAndCallback is the resumable-export hook. The
+// callback runs after each message outcome has been recorded and must remain
+// cheap enough for a durable journal.
+func ExportWithProgressModeAndCallback(filename, outputDir string, heartbeat func(), expectedMessages int, recoveryMode bool, progress func(done, total int), emlMode EMLMode, item func(MessageStatus)) (Report, error) {
+	return ExportWithProgressModeAndCallbacks(filename, outputDir, heartbeat, expectedMessages, recoveryMode, progress, emlMode, item, nil)
+}
+
+func ExportWithProgressModeAndCallbacks(filename, outputDir string, heartbeat func(), expectedMessages int, recoveryMode bool, progress func(done, total int), emlMode EMLMode, item func(MessageStatus), skip func(identity string) bool) (Report, error) {
+	return exportWithHeartbeatMode(filename, outputDir, heartbeat, expectedMessages, recoveryMode, progress, emlMode, item, skip)
 }
 
 // ExportRecoveredMessages writes messages found by go-pst's all-node recovery
@@ -186,7 +198,7 @@ func safeRecoveryNext(next func() bool) (ok bool, panicText string) {
 	return next(), ""
 }
 
-func exportWithHeartbeatMode(filename, outputDir string, heartbeat func(), expectedMessages int, recoveryMode bool, progress func(done, total int), emlMode EMLMode) (Report, error) {
+func exportWithHeartbeatMode(filename, outputDir string, heartbeat func(), expectedMessages int, recoveryMode bool, progress func(done, total int), emlMode EMLMode, item func(MessageStatus), skip func(identity string) bool) (Report, error) {
 	r := Report{Directory: outputDir, RecoveryMode: recoveryMode, EMLMode: emlMode, MessagesExpected: expectedMessages}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return r, err
@@ -211,13 +223,13 @@ func exportWithHeartbeatMode(filename, outputDir string, heartbeat func(), expec
 		return r, err
 	}
 	visited := map[pst.Identifier]bool{root.Identifier: true}
-	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), filepath.Join(outputDir, "OSTOM EML"), nil, &r, heartbeat, progress, visited, emlMode); err != nil {
+	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), filepath.Join(outputDir, "OSTOM EML"), nil, &r, heartbeat, progress, visited, emlMode, item, skip); err != nil {
 		return r, err
 	}
 	return r, nil
 }
 
-func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int), visited map[pst.Identifier]bool, emlMode EMLMode) error {
+func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int), visited map[pst.Identifier]bool, emlMode EMLMode, item func(MessageStatus), skip func(identity string) bool) error {
 	children, err := parent.GetSubFolders()
 	if err != nil {
 		return fmt.Errorf("read subfolders of %q: %w", parent.Name, err)
@@ -231,17 +243,17 @@ func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string
 		visited[folder.Identifier] = true
 		path := append(append([]string{}, parentPath...), folder.Name)
 		r.Folders++
-		if err := exportFolder(folder, root, emlRoot, path, r, heartbeat, progress, emlMode); err != nil {
+		if err := exportFolder(folder, root, emlRoot, path, r, heartbeat, progress, emlMode, item, skip); err != nil {
 			r.Errors = append(r.Errors, err.Error())
 		}
-		if err := exportChildren(folder, root, emlRoot, path, r, heartbeat, progress, visited, emlMode); err != nil {
+		if err := exportChildren(folder, root, emlRoot, path, r, heartbeat, progress, visited, emlMode, item, skip); err != nil {
 			r.Errors = append(r.Errors, err.Error())
 		}
 	}
 	return nil
 }
 
-func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Report, heartbeat func(), progress func(done, total int), emlMode EMLMode) error {
+func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Report, heartbeat func(), progress func(done, total int), emlMode EMLMode, item func(MessageStatus), skip func(identity string) bool) error {
 	filePath, err := mboxPath(root, path)
 	if err != nil {
 		return err
@@ -264,6 +276,13 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 			progress(r.MessagesAttempted, r.MessagesExpected)
 		}
 		messageIndex := r.MessagesAttempted
+		identity := fmt.Sprintf("indexed-folder-%d-message-%d", folder.Identifier, iter.Value().Identifier)
+		if skip != nil && skip(identity) {
+			status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), Outcome: "skipped"}
+			r.SkippedMessages++
+			recordMessageStatus(r, status)
+			continue
+		}
 		var written int
 		var partial bool
 		var subject string
@@ -272,7 +291,10 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 		} else {
 			written, partial, subject, err = writeMessageWithSource(f, iter.Value(), r, "indexed")
 		}
-		status := MessageStatus{Index: messageIndex, Folder: strings.Join(path, "\\"), Subject: subject, Attachments: written}
+		if err == nil {
+			err = f.Sync()
+		}
+		status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), Subject: subject, Attachments: written}
 		if err != nil {
 			var emlErr *emlWriteError
 			if errors.As(err, &emlErr) {
@@ -307,6 +329,9 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 			r.Messages++
 		}
 		recordMessageStatus(r, status)
+		if item != nil {
+			item(status)
+		}
 	}
 	if err := iter.Err(); err != nil {
 		r.Errors = append(r.Errors, fmt.Sprintf("message iterator in %q: %v", strings.Join(path, "\\"), err))

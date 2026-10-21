@@ -57,3 +57,37 @@ func TestConvertToSyntheticOSTChangesMagicAndCRCs(t *testing.T) {
 		t.Fatal("full header CRC was not recomputed")
 	}
 }
+
+func TestParseSize(t *testing.T) {
+	tests := map[string]int64{
+		"100":   100,
+		"100MB": 100 << 20,
+		"2 GiB": 2 << 30,
+	}
+	for input, want := range tests {
+		got, err := parseSize(input)
+		if err != nil {
+			t.Fatalf("parseSize(%q): %v", input, err)
+		}
+		if got != want {
+			t.Errorf("parseSize(%q) = %d, want %d", input, got, want)
+		}
+	}
+}
+
+func TestPadFileToSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.pst")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := padFileToSize(path, 2<<20); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 2<<20 {
+		t.Fatalf("padded size = %d, want %d", info.Size(), 2<<20)
+	}
+}

@@ -446,11 +446,31 @@ func CollectIndexedRecoveredMessagesWithProgress(name string, h Header, fileSize
 // cap for attachment payloads. It preserves the legacy entry point for
 // callers that intentionally want one shared cap.
 func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples int, progress func(done, total int)) (IndexedRecoveredMessageScan, error) {
+	return CollectIndexedRecoveredMessagesWithAttachmentLimitInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples, progress, "")
+}
+
+// CollectIndexedRecoveredMessagesWithAttachmentLimitInDir is the resumable
+// form. Large attachment payloads are spooled below workDir when supplied.
+func CollectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples int, progress func(done, total int), workDir string) (IndexedRecoveredMessageScan, error) {
+	return collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples, progress, workDir, nil)
+}
+
+// CollectIndexedRecoveredMessagesWithConsumerInDir emits each fully assembled
+// message once its attachments have been resolved. The consumer must finish
+// with the message before returning; the collector then releases it.
+func CollectIndexedRecoveredMessagesWithConsumerInDir(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples int, progress func(done, total int), workDir string, consumer func(RecoveredMessage) error) (IndexedRecoveredMessageScan, error) {
+	if consumer == nil {
+		return collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples, progress, workDir, nil)
+	}
+	return collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples, progress, workDir, consumer)
+}
+
+func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxAttachmentBytes, maxErrorSamples int, progress func(done, total int), workDir string, consumer func(RecoveredMessage) error) (IndexedRecoveredMessageScan, error) {
 	scan := IndexedRecoveredMessageScan{Mode: "indexed", Status: "not applicable"}
 	if maxNodes <= 0 || maxBlocks <= 0 || maxBytes == 0 || maxRecords <= 0 || maxMessages <= 0 || maxBodyBytes <= 0 || maxAttachmentBytes <= 0 || maxErrorSamples < 0 {
 		return scan, fmt.Errorf("native recovery limits must be positive")
 	}
-	collector, err := NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, maxAttachmentBytes)
+	collector, err := NewRecoveredMessageCollectorWithAttachmentLimitInDir(maxMessages, maxBodyBytes, maxAttachmentBytes, workDir)
 	if err != nil {
 		return scan, err
 	}
@@ -462,7 +482,10 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 	}
 	if len(nbt.nodeBIDs) == 0 && nbt.Status != "valid" {
 		_ = collector.Close()
-		return CollectSalvagedMessagesFromBBT(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress)
+		if consumer != nil {
+			return CollectSalvagedMessagesFromBBTWithConsumerInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir, consumer)
+		}
+		return CollectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir)
 	}
 	seen := make(map[uint64]bool)
 	folderPaths, hierarchy, folderErrors := collectIndexedFolderPaths(name, h, fileSize, nbt.nodeBIDs, maxBlocks, maxBytes, maxRecords, maxErrorSamples)
@@ -544,8 +567,23 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 				scan.addError(fmt.Errorf("NID 0x%X attachment 0x%X: %s", node.nid, attachmentNID, resolutionErr), maxErrorSamples)
 			}
 		}
+		if consumer != nil {
+			message, ok := collector.Take(node.dataBID)
+			if !ok {
+				return scan, fmt.Errorf("collector lost message BID 0x%X", node.dataBID)
+			}
+			if err := consumer(message); err != nil {
+				_ = collector.Close()
+				for _, cleanup := range cleanups {
+					_ = cleanup()
+				}
+				return scan, fmt.Errorf("consume message BID 0x%X: %w", node.dataBID, err)
+			}
+		}
 	}
-	scan.Messages = collector.Messages()
+	if consumer == nil {
+		scan.Messages = collector.Messages()
+	}
 	scan.Cleanup = func() error {
 		var firstErr error
 		for _, cleanup := range cleanups {
@@ -573,6 +611,18 @@ func CollectIndexedRecoveredMessagesWithAttachmentLimit(name string, h Header, f
 // candidates have no reliable NID, parent folder, or attachment tree.
 // Synthetic NIDs are used only as stable local identities in the result.
 func CollectSalvagedMessagesFromBBT(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples int, progress func(done, total int)) (IndexedRecoveredMessageScan, error) {
+	return CollectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, "")
+}
+
+func CollectSalvagedMessagesFromBBTInDir(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples int, progress func(done, total int), workDir string) (IndexedRecoveredMessageScan, error) {
+	return collectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir, nil)
+}
+
+func CollectSalvagedMessagesFromBBTWithConsumerInDir(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples int, progress func(done, total int), workDir string, consumer func(RecoveredMessage) error) (IndexedRecoveredMessageScan, error) {
+	return collectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir, consumer)
+}
+
+func collectSalvagedMessagesFromBBTInDir(name string, h Header, fileSize int64, maxNodes, maxBlocks int, maxBytes uint64, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples int, progress func(done, total int), workDir string, consumer func(RecoveredMessage) error) (IndexedRecoveredMessageScan, error) {
 	scan := IndexedRecoveredMessageScan{Mode: "salvage", Status: "not applicable"}
 	if maxNodes <= 0 || maxBlocks <= 0 || maxBytes == 0 || maxRecords <= 0 || maxMessages <= 0 || maxBodyBytes <= 0 || maxErrorSamples < 0 {
 		return scan, fmt.Errorf("salvage recovery limits must be positive")
@@ -591,7 +641,7 @@ func CollectSalvagedMessagesFromBBT(name string, h Header, fileSize int64, maxNo
 		bids = bids[:maxNodes]
 		scan.LimitReached = true
 	}
-	collector, err := NewRecoveredMessageCollector(maxMessages, maxBodyBytes)
+	collector, err := NewRecoveredMessageCollectorWithAttachmentLimitInDir(maxMessages, maxBodyBytes, maxBodyBytes, workDir)
 	if err != nil {
 		return scan, err
 	}
@@ -615,6 +665,17 @@ func CollectSalvagedMessagesFromBBT(name string, h Header, fileSize int64, maxNo
 			for _, resolutionErr := range result.ResolutionErrors {
 				scan.addError(fmt.Errorf("salvage BID 0x%X: %s", bid, resolutionErr), maxErrorSamples)
 			}
+			if added && consumer != nil {
+				message, ok := collector.Take(bid)
+				if !ok {
+					_ = collector.Close()
+					return scan, fmt.Errorf("collector lost salvaged message BID 0x%X", bid)
+				}
+				if err := consumer(message); err != nil {
+					_ = collector.Close()
+					return scan, fmt.Errorf("consume salvaged message BID 0x%X: %w", bid, err)
+				}
+			}
 		} else {
 			scan.Rejected++
 			if len(scan.ErrorSamples) < maxErrorSamples {
@@ -626,7 +687,9 @@ func CollectSalvagedMessagesFromBBT(name string, h Header, fileSize int64, maxNo
 			progress(index+1, len(bids))
 		}
 	}
-	scan.Messages = collector.Messages()
+	if consumer == nil {
+		scan.Messages = collector.Messages()
+	}
 	_, rejected, duplicates, limited := collector.Stats()
 	scan.Rejected += rejected
 	scan.Duplicates = duplicates
@@ -1548,6 +1611,7 @@ type RecoveredMessageCollector struct {
 	maxBody       int
 	maxAttachment int
 	messages      []RecoveredMessage
+	added         int
 	seen          map[uint64]bool
 	duplicates    int
 	rejected      int
@@ -1566,10 +1630,22 @@ func NewRecoveredMessageCollector(maxMessages, maxBodyBytes int) (*RecoveredMess
 // useful preview body, so sharing the body cap silently discarded otherwise
 // readable files during native recovery.
 func NewRecoveredMessageCollectorWithAttachmentLimit(maxMessages, maxBodyBytes, maxAttachmentBytes int) (*RecoveredMessageCollector, error) {
+	return NewRecoveredMessageCollectorWithAttachmentLimitInDir(maxMessages, maxBodyBytes, maxAttachmentBytes, "")
+}
+
+// NewRecoveredMessageCollectorWithAttachmentLimitInDir places the attachment
+// spool under workDir when supplied. Empty workDir preserves the historical
+// system-temporary behavior for library callers.
+func NewRecoveredMessageCollectorWithAttachmentLimitInDir(maxMessages, maxBodyBytes, maxAttachmentBytes int, workDir string) (*RecoveredMessageCollector, error) {
 	if maxMessages <= 0 || maxBodyBytes <= 0 || maxAttachmentBytes <= 0 {
 		return nil, fmt.Errorf("recovered message limits must be positive")
 	}
-	payloadDir, err := os.MkdirTemp("", "ostom-attachments-")
+	if workDir != "" {
+		if err := os.MkdirAll(workDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create recovery work area: %w", err)
+		}
+	}
+	payloadDir, err := os.MkdirTemp(workDir, "native-payload-")
 	if err != nil {
 		return nil, fmt.Errorf("create attachment spool: %w", err)
 	}
@@ -1652,6 +1728,7 @@ func (c *RecoveredMessageCollector) AddResolvedPropertiesWithParent(nid, parentN
 		return false, nil
 	}
 	c.messages = append(c.messages, message)
+	c.added++
 	return true, nil
 }
 
@@ -1829,12 +1906,34 @@ func (c *RecoveredMessageCollector) Messages() []RecoveredMessage {
 	return result
 }
 
+// Take removes one fully assembled message from the collector and returns it
+// to a streaming consumer. Clearing the slice slot is important: it releases
+// the body, attachment metadata, and any in-memory payload immediately after
+// the consumer finishes with the value.
+func (c *RecoveredMessageCollector) Take(bid uint64) (RecoveredMessage, bool) {
+	if c == nil {
+		return RecoveredMessage{}, false
+	}
+	for index := range c.messages {
+		if c.messages[index].BID != bid {
+			continue
+		}
+		message := c.messages[index]
+		copy(c.messages[index:], c.messages[index+1:])
+		var empty RecoveredMessage
+		c.messages[len(c.messages)-1] = empty
+		c.messages = c.messages[:len(c.messages)-1]
+		return message, true
+	}
+	return RecoveredMessage{}, false
+}
+
 // Stats returns bounded accounting for the final recovery log.
 func (c *RecoveredMessageCollector) Stats() (added, rejected, duplicates int, limitReached bool) {
 	if c == nil {
 		return 0, 0, 0, false
 	}
-	return len(c.messages), c.rejected, c.duplicates, c.limited
+	return c.added, c.rejected, c.duplicates, c.limited
 }
 
 func decodePropertyText(value PropertyValue) string {

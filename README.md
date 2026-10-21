@@ -223,6 +223,22 @@ go run ./cmd/ostom-fixture -kind pst -damage header-crc -out testdata\fixtures\s
 test files. It is not needed for ordinary recovery. See [FORMAT](FORMAT.md) for
 test-corpus provenance and public OST samples used for validation.
 
+For an optional large, real PST test file, use the external C# builder. It is
+not part of OSTOM and is never downloaded by the normal CI workflow:
+
+```powershell
+.\scripts\generate-large-pst.ps1 -SizeMb 100
+```
+
+The script stores the generated file under `testdata\generated` (which is
+ignored by Git), validates it with OSTOM, and removes the temporary builder
+source. To run the large-PST test again without generating a file:
+
+```powershell
+$env:OSTOM_LARGE_PST = (Resolve-Path .\testdata\generated\large-100mb.pst)
+go test -trimpath ./cmd/ostom-fixture -run LargePSTRecoverySmoke
+```
+
 ### Thunderbird export
 
 To export indexed readable messages directly into a Thunderbird-compatible `Local Folders` tree:

@@ -9,6 +9,9 @@ source file.
 
 ### Now
 
+- [ ] Design resumable recovery for large OST/PST files, including occasional
+  5, 15, and 20+ GB cases: persist inventory, per-item outcomes, checkpoints,
+  and enough provenance to resume without repeating completed work.
 - [ ] Establish a bounded healthy-PST/OST indexed-export baseline independent
   of native recovery. Verify folder/message/attachment counts and checksums;
   document `go-pst` limitations without treating it as a recovery reference.
@@ -28,6 +31,81 @@ source file.
 - [ ] Keep PST/OST generation outside the Go runtime.
 
 The sections below are reference notes and evidence, not a second task queue.
+
+## Large-file recovery — resumable CLI pipeline
+
+Large OST/PST files must be processed as a resumable job rather than one
+unbounded command. This is a CLI/core concern and does not belong to the GUI
+polish queue.
+
+Implementation order, keeping service data away from the user's folders:
+
+- [ ] Keep all service data under a hidden `.ostom` directory inside the export
+  directory; never place journals or unfinished files in `Local Folders`.
+- [x] Define a hidden batch record with number, state, size, and checksum;
+  reuse it only after both the record and artifact validate.
+- [x] Validate a whole batch output directory, not only one file: include
+  relative names, total bytes, and the contents of every file.
+- [x] For native export, write each batch to a hidden directory first, validate
+  and commit it, then assemble visible output only after the pass succeeds.
+- [x] Resume native export from committed batches: bind them to the source
+  fingerprint session, validate before reuse, and retry only missing or
+  damaged portions.
+- [x] Stream MIME messages and attachments to disk without assembling a whole
+  message or encoded attachment in RAM; keep in-memory limits only for already
+  collected native candidates.
+- [x] In the CLI native path, stop retaining every structurally recovered
+  message before export: emit each candidate to a consumer as soon as it is
+  parsed and release its body after writing; retain the old list API for
+  compatibility.
+- [x] Bound the native export queue to small batches: at most 64 messages or
+  about 8 MiB of data, in addition to the one message currently being parsed.
+- [ ] Separate transient and resumable data: use the system `Temp` only for
+  short-lived small files, while large bodies, batches, and the journal live
+  in a hidden OSTOM work area on the same volume as the result.
+- [x] Move attachment-body spooling out of anonymous system `Temp` and into
+  the session work area; if space is insufficient, stop the current batch
+  clearly while preserving already committed batches.
+- [ ] Split the work into self-contained batches and write each batch first to
+  an internal temporary destination.
+- [ ] Mark a batch complete only after validation; discard and retry an
+  incomplete batch on the next run.
+- [ ] Build visible mbox output from committed batches into a temporary file,
+  then replace the previous result with one safe move.
+- [ ] Resume the same job automatically from hidden state; users should not
+  need separate commands or service flags.
+
+Do not enable journal-only message skipping before these guarantees exist: a
+journal does not prove that visible output was not deleted, changed, or
+truncated.
+
+- [x] Define a session sidecar with source fingerprint (size, modification
+  metadata, header identity), schema version, phase, cursor, and options.
+- [ ] Stream a durable inventory of discovered folders, messages, attachments,
+  and native candidates instead of retaining the complete worklist in memory.
+- [ ] Write an append-only manifest with a stable source identity, route,
+  status, output path, byte counts, checksum, and error evidence for every
+  item.
+- [ ] Use explicit item states: `discovered`, `in_progress`, `exported`,
+  `partial`, `skipped`, and `failed`; treat an interrupted `in_progress` item
+  as safely retryable.
+- [ ] Make each batch transactional: write to a temporary destination, verify
+  it, atomically finalize it, then commit the manifest record and checkpoint.
+- [ ] Resume only when the source fingerprint and relevant options match;
+  refuse to mix results from different source files or incompatible runs.
+- [ ] Add deterministic deduplication for indexed/native results so a resumed
+  or fallback pass cannot export the same message or attachment twice.
+- [x] Replace the fixed indexed-export watchdog with heartbeat/idle detection
+  plus a size-aware absolute cap; a large healthy file must not be killed just
+  because it needs more than 60 seconds.
+- [ ] Make native recovery budgets phase-aware and resumable; report when a
+  node, byte, message, or attachment limit stopped a batch.
+- [ ] Keep mbox generation restart-safe: do not mark an item complete until
+  its output is durable, and define how committed batches are merged without
+  duplicate messages.
+- [ ] Add interruption/resume tests for large synthetic sources and record a
+  validation plan covering real OST/PST files across several sizes, including
+  5, 15, and 20+ GB cases, before claiming broad large-file support.
 
 ## .NET GUI — compact utility polish
 
@@ -80,9 +158,17 @@ The sections below are reference notes and evidence, not a second task queue.
 - [x] Add a deterministic Go EML corpus generator to the service fixture
   utility (`ostom-fixture -kind eml`) with Unicode messages, multiple and
   inline attachments, stable MIME boundaries, and a SHA-256 manifest.
-- [ ] Add an optional external PST builder for controlled fixtures. Keep it
-  outside the OSTOM runtime and validate generated PSTs with independent
-  readers; Outlook is an optional compatibility reference, not a prerequisite.
+- [x] Add a `-min-size` mode that grows a validated small PST/OST into a large
+  test file without loading the whole file into memory.
+- [x] Add an opt-in large-PST test through `OSTOM_LARGE_PST`, so ordinary CI
+  never downloads or stores the large file.
+- [x] Add an optional external PST builder for controlled fixtures through
+  `scripts/generate-large-pst.ps1`. Keep it outside the OSTOM runtime, pin the
+  builder version, and validate generated PSTs with OSTOM. Large files stay out
+  of ordinary CI and Git.
+- [x] Record the external builder workflow: download the pinned source, run the
+  `PstBuilder.LargeTest` sample with `dotnet run`, generate the PST, and run
+  `TestLargePSTRecoverySmoke`.
 - [ ] Do not implement a PST writer in Go as part of OSTOM. The existing Go
   writer dependency is not a reliable generator; PST creation is a separate
   tool concern and must not block OST recovery work.

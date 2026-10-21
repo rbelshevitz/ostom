@@ -53,10 +53,6 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 	if len(folderPath) == 0 {
 		return fmt.Errorf("empty folder path")
 	}
-	msg, err := w.RenderWithSource(subject, from, to, cc, messageID, date, body, attachments, source)
-	if err != nil {
-		return err
-	}
 	path, err := w.folderFile(folderPath)
 	if err != nil {
 		return err
@@ -76,7 +72,7 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 	if _, err := fmt.Fprintf(f, "From %s %s\r\n", from, date.Format("Mon Jan _2 15:04:05 2006")); err != nil {
 		return err
 	}
-	if err := writeEscapedMbox(f, msg); err != nil {
+	if err := writeMessageTo(newMboxLineWriter(f), w, subject, from, to, cc, messageID, date, body, attachments, source); err != nil {
 		return err
 	}
 	_, err = f.WriteString("\r\n")
@@ -87,28 +83,39 @@ func (w *Writer) WriteWithSource(folderPath []string, subject, from, to, cc, mes
 // per-message EML export so both recovery outputs carry identical MIME data.
 func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date time.Time, body string, attachments []Attachment, source string) ([]byte, error) {
 	var msg bytes.Buffer
+	if err := writeMessageTo(&msg, w, subject, from, to, cc, messageID, date, body, attachments, source); err != nil {
+		return nil, err
+	}
+	return msg.Bytes(), nil
+}
+
+// writeMessageTo writes one RFC 5322 message without first building the whole
+// MIME document in memory. This matters for large attachments: the source
+// reader is copied through the MIME encoder into the destination in bounded
+// chunks.
+func writeMessageTo(dst io.Writer, w *Writer, subject, from, to, cc, messageID string, date time.Time, body string, attachments []Attachment, source string) error {
 	if from == "" {
 		from = "unknown"
 	}
 	if date.IsZero() {
 		date = time.Unix(0, 0).UTC()
 	}
-	fmt.Fprintf(&msg, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
-	fmt.Fprintf(&msg, "From: %s\r\n", from)
+	fmt.Fprintf(dst, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
+	fmt.Fprintf(dst, "From: %s\r\n", from)
 	if to != "" {
-		fmt.Fprintf(&msg, "To: %s\r\n", to)
+		fmt.Fprintf(dst, "To: %s\r\n", to)
 	}
 	if cc != "" {
-		fmt.Fprintf(&msg, "Cc: %s\r\n", cc)
+		fmt.Fprintf(dst, "Cc: %s\r\n", cc)
 	}
 	if messageID != "" {
-		fmt.Fprintf(&msg, "Message-ID: %s\r\n", messageID)
+		fmt.Fprintf(dst, "Message-ID: %s\r\n", messageID)
 	}
-	fmt.Fprintf(&msg, "Date: %s\r\n", date.Format(time.RFC1123Z))
+	fmt.Fprintf(dst, "Date: %s\r\n", date.Format(time.RFC1123Z))
 	if source == "" {
 		source = "indexed"
 	}
-	fmt.Fprintf(&msg, "X-Ostom-Source: %s\r\nMIME-Version: 1.0\r\n", source)
+	fmt.Fprintf(dst, "X-Ostom-Source: %s\r\nMIME-Version: 1.0\r\n", source)
 
 	usable := make([]Attachment, 0, len(attachments))
 	for _, attachment := range attachments {
@@ -123,19 +130,21 @@ func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date 
 		usable = append(usable, attachment)
 	}
 	if len(usable) == 0 {
-		fmt.Fprint(&msg, "Content-Type: text/plain; charset=utf-8\r\n\r\n")
-		writeMboxBody(&msg, body)
+		fmt.Fprint(dst, "Content-Type: text/plain; charset=utf-8\r\n\r\n")
+		writeMboxBody(dst, body)
 	} else {
-		var multipartBody bytes.Buffer
-		mw := multipart.NewWriter(&multipartBody)
+		mw := multipart.NewWriter(dst)
+		if _, err := fmt.Fprintf(dst, "Content-Type: multipart/mixed; boundary=%q\r\n\r\n", mw.Boundary()); err != nil {
+			return err
+		}
 		textHeader := make(textproto.MIMEHeader)
 		textHeader.Set("Content-Type", "text/plain; charset=utf-8")
 		part, err := mw.CreatePart(textHeader)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if _, err := part.Write([]byte(body)); err != nil {
-			return nil, err
+		if _, err := io.WriteString(part, body); err != nil {
+			return err
 		}
 		for _, attachment := range usable {
 			h := make(textproto.MIMEHeader)
@@ -152,20 +161,17 @@ func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date 
 			}
 			part, err := mw.CreatePart(h)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if err := writeBase64(part, attachment); err != nil {
-				return nil, fmt.Errorf("encode attachment %q: %w", attachment.Name, err)
+				return fmt.Errorf("encode attachment %q: %w", attachment.Name, err)
 			}
 		}
 		if err := mw.Close(); err != nil {
-			return nil, err
+			return err
 		}
-		fmt.Fprintf(&msg, "Content-Type: multipart/mixed; boundary=%q\r\n\r\n", mw.Boundary())
-		msg.Write(multipartBody.Bytes())
 	}
-
-	return msg.Bytes(), nil
+	return nil
 }
 
 // writeBase64 streams an attachment through the MIME encoder. Data remains a
@@ -273,12 +279,36 @@ func writeEscapedMbox(f *os.File, data []byte) error {
 	return nil
 }
 
-func writeMboxBody(msg *bytes.Buffer, body string) {
+func writeMboxBody(msg io.Writer, body string) {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
 	for _, line := range strings.Split(body, "\n") {
 		fmt.Fprintf(msg, "%s\r\n", line)
 	}
+}
+
+type mboxLineWriter struct {
+	w           io.Writer
+	atLineStart bool
+}
+
+func newMboxLineWriter(w io.Writer) *mboxLineWriter {
+	return &mboxLineWriter{w: w, atLineStart: true}
+}
+
+func (w *mboxLineWriter) Write(p []byte) (int, error) {
+	for i, b := range p {
+		if w.atLineStart && b == 'F' && len(p)-i >= 5 && string(p[i:i+5]) == "From " {
+			if _, err := io.WriteString(w.w, ">"); err != nil {
+				return i, err
+			}
+		}
+		if _, err := w.w.Write([]byte{b}); err != nil {
+			return i, err
+		}
+		w.atLineStart = b == '\n'
+	}
+	return len(p), nil
 }
 
 func safeName(value string) string {

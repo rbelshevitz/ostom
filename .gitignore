@@ -7,5 +7,6 @@ gui/Ostom.Gui/obj/
 /ostom-fixture.exe
 /testdata/export-*/
 /testdata/fixtures/
+/testdata/generated/
 /testdata/external/*.ost
 /testdata/external/*.ostom-export/

@@ -7,9 +7,11 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	outlookpst "github.com/grokify/outlook-pst-go"
@@ -24,6 +26,7 @@ func main() {
 	source := flag.String("source", "", "known-good PST source; defaults to the dependency's sample.pst")
 	messages := flag.Int("messages", 0, "minimum indexed messages required in the source fixture")
 	emlCount := flag.Int("eml-count", 6, "number of deterministic EML messages when -kind eml")
+	minSize := flag.String("min-size", "", "pad a valid PST/OST to at least this size (for example 100MB)")
 	flag.Parse()
 	if *kind != "pst" && *kind != "ost" && *kind != "eml" {
 		fatalf("-kind must be pst, ost, or eml")
@@ -46,6 +49,10 @@ func main() {
 	}
 	if *messages < 0 {
 		fatalf("-messages must be non-negative")
+	}
+	targetSize, err := parseSize(*minSize)
+	if err != nil {
+		fatalf("parse -min-size: %v", err)
 	}
 	base, err := resolveSource(*source)
 	if err != nil {
@@ -72,6 +79,11 @@ func main() {
 	} else if err := copyFile(building, *out); err != nil {
 		fatalf("rename fixture: %v", err)
 	}
+	if targetSize > 0 {
+		if err := padFileToSize(*out, targetSize); err != nil {
+			fatalf("pad fixture: %v", err)
+		}
+	}
 	if err := validateFixture(*out, *kind); err != nil {
 		fatalf("generated fixture failed parser validation: %v", err)
 	}
@@ -79,6 +91,67 @@ func main() {
 		fatalf("damage fixture: %v", err)
 	}
 	fmt.Printf("created %s (%s, damage=%s)\n", *out, *kind, valueOrNone(*damage))
+}
+
+func parseSize(value string) (int64, error) {
+	value = strings.TrimSpace(strings.ToUpper(value))
+	if value == "" {
+		return 0, nil
+	}
+	multiplier := int64(1)
+	for _, suffix := range []struct {
+		name  string
+		value int64
+	}{
+		{"GIB", 1 << 30}, {"GB", 1 << 30},
+		{"MIB", 1 << 20}, {"MB", 1 << 20},
+		{"KIB", 1 << 10}, {"KB", 1 << 10},
+	} {
+		if strings.HasSuffix(value, suffix.name) {
+			value = strings.TrimSpace(strings.TrimSuffix(value, suffix.name))
+			multiplier = suffix.value
+			break
+		}
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("expected a non-negative byte count or size such as 100MB")
+	}
+	if n > (1<<63-1)/multiplier {
+		return 0, fmt.Errorf("size is too large")
+	}
+	return n * multiplier, nil
+}
+
+func padFileToSize(filename string, target int64) error {
+	file, err := os.OpenFile(filename, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() >= target {
+		return nil
+	}
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
+	zeroes := make([]byte, 1<<20)
+	remaining := target - info.Size()
+	for remaining > 0 {
+		chunk := int64(len(zeroes))
+		if chunk > remaining {
+			chunk = remaining
+		}
+		if _, err := file.Write(zeroes[:chunk]); err != nil {
+			return err
+		}
+		remaining -= chunk
+	}
+	return file.Sync()
 }
 
 func countMessages(filename string) (int, error) {
@@ -151,27 +224,56 @@ func resolveSource(explicit string) (string, error) {
 }
 
 func copyFile(src, dst string) error {
-	b, err := os.ReadFile(src)
+	input, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, b, 0o644)
+	defer input.Close()
+	output, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return err
+	}
+	if err := output.Sync(); err != nil {
+		_ = output.Close()
+		return err
+	}
+	return output.Close()
 }
 
 func convertToSyntheticOST(src, dst string) error {
-	b, err := os.ReadFile(src)
+	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
-	if len(b) < 524 {
+	if info.Size() < 524 {
 		return fmt.Errorf("fixture is shorter than Unicode header")
+	}
+	if err := copyFile(src, dst); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(dst, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	b := make([]byte, 524)
+	if _, err := file.ReadAt(b, 0); err != nil {
+		return err
 	}
 	// wMagicClient: PST "SM" -> OST "SO". Recompute the two Unicode
 	// header CRCs using the same algorithm as the library/spec fixture.
 	b[8], b[9] = 'S', 'O'
 	binary.LittleEndian.PutUint32(b[4:8], disk.ComputeCRC(b[8:524]))
 	binary.LittleEndian.PutUint32(b[520:524], disk.ComputeCRC(b[8:520]))
-	return os.WriteFile(dst, b, 0o644)
+	if _, err := file.WriteAt(b[4:10], 4); err != nil {
+		return err
+	}
+	_, err = file.WriteAt(b[520:524], 520)
+	return err
 }
 
 func damageFile(filename, damage string) error {

@@ -6,6 +6,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +92,36 @@ func TestRenderKeepsAttachmentsBoundToOneMessage(t *testing.T) {
 	}
 	if len(names) != 2 || names[0] != "unicode-имя.txt" || names[1] != "inline.bin" {
 		t.Fatalf("MIME attachment names = %v", names)
+	}
+}
+
+func TestWriteWithSourceStreamsAttachmentToMbox(t *testing.T) {
+	root := t.TempDir()
+	writer, err := New(root, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := false
+	attachment := Attachment{
+		Name: "large.bin",
+		Open: func() (io.ReadCloser, error) {
+			opened = true
+			return io.NopCloser(strings.NewReader(strings.Repeat("payload-", 4096))), nil
+		},
+		Size: 8 * 4096,
+	}
+	if err := writer.WriteWithSource([]string{"Inbox"}, "subject", "sender@example.test", "", "", "", zeroTime(), "body", []Attachment{attachment}, "native-recovered"); err != nil {
+		t.Fatal(err)
+	}
+	if !opened {
+		t.Fatal("streaming attachment opener was not called")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "Inbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("Content-Type: multipart/mixed")) || !bytes.Contains(data, []byte("cGF5bG9hZC0")) {
+		t.Fatalf("streamed mbox message is incomplete: %q", data[:min(len(data), 256)])
 	}
 }
 

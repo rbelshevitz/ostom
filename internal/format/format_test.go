@@ -50,6 +50,33 @@ func TestRecoveredCollectorSpoolsLargeAttachment(t *testing.T) {
 	}
 }
 
+func TestRecoveredCollectorTakeReleasesMessage(t *testing.T) {
+	collector, err := NewRecoveredMessageCollector(2, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collector.Close()
+	added, err := collector.AddResolvedProperties(0x44, 0x100, []PropertyValue{
+		{PropID: 0x001A, PropType: 0x001E, Data: []byte("IPM.Note\x00")},
+		{PropID: 0x0037, PropType: 0x001E, Data: []byte("subject\x00")},
+		{PropID: 0x1000, PropType: 0x001E, Data: []byte("body\x00")},
+	})
+	if err != nil || !added {
+		t.Fatalf("add message: added=%v err=%v", added, err)
+	}
+	message, ok := collector.Take(0x100)
+	if !ok || message.BID != 0x100 || string(message.Body) != "body\x00" {
+		t.Fatalf("unexpected taken message: ok=%v message=%+v", ok, message)
+	}
+	if got := len(collector.Messages()); got != 0 {
+		t.Fatalf("collector retained %d messages", got)
+	}
+	addedCount, _, _, _ := collector.Stats()
+	if addedCount != 1 {
+		t.Fatalf("added count = %d, want 1", addedCount)
+	}
+}
+
 func TestResolvePropertyValueKeepsBinarySubnodeLazy(t *testing.T) {
 	payload := []byte("large attachment")
 	value, err := ResolvePropertyValueWithSubnodePayloads(

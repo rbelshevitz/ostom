@@ -17,6 +17,7 @@ import (
 	"ostom/internal/export/native"
 	"ostom/internal/format"
 	"ostom/internal/recovery/manifest"
+	"ostom/internal/recovery/session"
 	"ostom/internal/storage"
 )
 
@@ -91,6 +92,9 @@ func main() {
 	fullEML := flag.Bool("eml", false, "also write one EML file for every indexed message")
 	indexedWorker := flag.Bool("indexed-worker", false, "internal indexed export worker")
 	indexedRecovery := flag.Bool("indexed-recovery", false, "internal indexed worker recovery mode")
+	heartbeatFile := flag.String("heartbeat-file", "", "internal worker heartbeat file")
+	journalFile := flag.String("journal-file", "", "internal worker item journal")
+	workDir := flag.String("work-dir", "", "internal worker work directory")
 	nativeWorker := flag.Bool("native-worker", false, "internal native recovery worker")
 	nativeAnalyzeWorker := flag.Bool("native-analyze-worker", false, "internal native content-analysis worker")
 	flag.Parse()
@@ -112,11 +116,11 @@ func main() {
 		os.Exit(exitUsage)
 	}
 	if *indexedWorker {
-		runIndexedWorker(flag.Arg(0), *exportDir, *indexedRecovery, *quiet, *fullEML)
+		runIndexedWorker(flag.Arg(0), *exportDir, *indexedRecovery, *quiet, *fullEML, *heartbeatFile, *journalFile)
 		return
 	}
 	if *nativeWorker {
-		runNativeWorker(flag.Arg(0), *exportDir, *quiet, *fullEML)
+		runNativeWorker(flag.Arg(0), *exportDir, *quiet, *fullEML, *workDir)
 		return
 	}
 	if *nativeAnalyzeWorker {
@@ -129,6 +133,16 @@ func main() {
 	info, err := os.Stat(source)
 	if err != nil {
 		fatalf("open source: %v", err)
+	}
+	var runSession *session.Store
+	if *exportDir != "" {
+		runSession, err = session.Open(*exportDir, source, session.Options{RecoveryScan: *recoveryScan, FullEML: *fullEML})
+		if err != nil {
+			fatalf("open recovery session: %v", err)
+		}
+		if err := runSession.Update("inspecting", ""); err != nil {
+			fatalf("update recovery session: %v", err)
+		}
 	}
 	h := format.ReadHeader(source)
 	if h.OK {
@@ -153,6 +167,9 @@ func main() {
 	if !h.OK {
 		r.Status = "failed"
 		r.Errors = append(r.Errors, "source is not a recognized PFF/OST/PST file")
+		if runSession != nil {
+			_ = runSession.Update("failed", "")
+		}
 		finish(r, *jsonOutput, *outputDir, *exportDir)
 		os.Exit(exitCode(r))
 	}
@@ -176,7 +193,7 @@ func main() {
 			} else {
 				r.RecoveryRun = "automatic"
 			}
-			nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML)
+			nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession))
 			r.Native = &nativeReport
 			if nativeErr != nil {
 				r.Errors = append(r.Errors, "recovery scan: "+nativeErr.Error())
@@ -194,7 +211,11 @@ func main() {
 		// Deep recovery is native-only. go-pst remains an optional ordinary
 		// indexed backend; its recovery-mode heuristics are not safe to run on
 		// damaged 4 KiB OSTs and have no bounded cancellation path.
-		indexed, exportErr := runIndexedExportWithTimeout(source, *exportDir, false, progress, *quiet, *fullEML)
+		journalPath := ""
+		if runSession != nil {
+			journalPath = runSession.JournalPath()
+		}
+		indexed, exportErr := runIndexedExportWithTimeout(source, *exportDir, false, info.Size(), journalPath, progress, *quiet, *fullEML)
 		r.Indexed = &indexed
 		if exportErr != nil {
 			r.IndexedStatus = "timeout_or_failed"
@@ -206,7 +227,7 @@ func main() {
 			// Switch to the bounded native path automatically after the watchdog
 			// fires; its output is kept in a separate recovery mailbox tree.
 			if r.IndexedStatus == "timeout" && r.Native == nil {
-				nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML)
+				nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession))
 				r.Native = &nativeReport
 				if nativeErr != nil {
 					r.Errors = append(r.Errors, "recovery fallback: "+nativeErr.Error())
@@ -228,6 +249,13 @@ func main() {
 		if err := writeRecoveryManifest(manifestDir, source, r); err != nil {
 			r.Errors = append(r.Errors, "recovery manifest: "+err.Error())
 		}
+	}
+	if runSession != nil {
+		phase := "completed"
+		if len(r.Errors) > 0 {
+			phase = "partial"
+		}
+		_ = runSession.Update(phase, "")
 	}
 	r.Findings = summarizeFindings(r)
 	r.Elapsed = time.Since(started).Round(time.Millisecond).String()
@@ -370,10 +398,28 @@ func nonEmptyErrors(value string) []string {
 	return []string{value}
 }
 
-const indexedExportTimeout = 60 * time.Second
+const indexedIdleTimeout = 5 * time.Minute
+
+func indexedExportTimeout(fileSize int64) time.Duration {
+	timeout := 10 * time.Minute
+	if fileSize > 0 {
+		timeout += time.Duration(fileSize/(1<<30)) * 5 * time.Minute
+	}
+	if timeout > 2*time.Hour {
+		return 2 * time.Hour
+	}
+	return timeout
+}
 
 func defaultNativeLimits(writeEML bool) native.Limits {
 	return native.Limits{MaxNodes: 100000, MaxBlocks: 1024, MaxBytes: 64 << 20, MaxRecords: 4096, MaxMessages: 100000, MaxBodyBytes: 4 << 20, MaxAttachmentBytes: 32 << 20, MaxErrorSamples: 256, WriteEML: writeEML}
+}
+
+func nativeWorkDir(store *session.Store) string {
+	if store == nil {
+		return ""
+	}
+	return store.WorkDir("native")
 }
 
 func nativeExportTimeout(fileSize int64) time.Duration {
@@ -390,13 +436,16 @@ func nativeExportTimeout(fileSize int64) time.Duration {
 	return timeout
 }
 
-func runNativeExportWithTimeout(source, output string, fileSize int64, quiet, fullEML bool) (native.PipelineReport, error) {
+func runNativeExportWithTimeout(source, output string, fileSize int64, quiet, fullEML bool, workDir string) (native.PipelineReport, error) {
 	result := native.PipelineReport{}
 	executable, err := os.Executable()
 	if err != nil {
 		return result, fmt.Errorf("locate native worker: %w", err)
 	}
 	args := []string{"-native-worker", "-export-dir", output}
+	if workDir != "" {
+		args = append(args, "-work-dir", workDir)
+	}
 	if jsonProgress {
 		args = append(args, "-progress-json")
 	}
@@ -476,13 +525,24 @@ func runNativeAnalysisWithTimeout(source string, fileSize int64, quiet bool) (An
 	}
 }
 
-func runIndexedExportWithTimeout(source, output string, recovery bool, progress func(done, total int), quiet, fullEML bool) (gopst.Report, error) {
+func runIndexedExportWithTimeout(source, output string, recovery bool, fileSize int64, journalFile string, progress func(done, total int), quiet, fullEML bool) (gopst.Report, error) {
 	result := gopst.Report{Directory: output, RecoveryMode: recovery}
 	executable, err := os.Executable()
 	if err != nil {
 		return result, fmt.Errorf("locate indexed worker: %w", err)
 	}
 	args := []string{"-indexed-worker", "-export-dir", output}
+	heartbeat, err := os.CreateTemp("", "ostom-indexed-heartbeat-*")
+	if err != nil {
+		return result, fmt.Errorf("create indexed heartbeat: %w", err)
+	}
+	heartbeatPath := heartbeat.Name()
+	_ = heartbeat.Close()
+	defer os.Remove(heartbeatPath)
+	args = append(args, "-heartbeat-file", heartbeatPath)
+	if journalFile != "" {
+		args = append(args, "-journal-file", journalFile)
+	}
 	if jsonProgress {
 		args = append(args, "-progress-json")
 	}
@@ -505,21 +565,39 @@ func runIndexedExportWithTimeout(source, output string, recovery bool, progress 
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	timer := time.NewTimer(indexedExportTimeout)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		if err != nil {
-			return result, fmt.Errorf("indexed worker: %w: %s", err, trimWorkerError(stderr.String()))
+	absoluteTimer := time.NewTimer(indexedExportTimeout(fileSize))
+	defer absoluteTimer.Stop()
+	idleTicker := time.NewTicker(2 * time.Second)
+	defer idleTicker.Stop()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				return result, fmt.Errorf("indexed worker: %w: %s", err, trimWorkerError(stderr.String()))
+			}
+			goto finished
+		case <-absoluteTimer.C:
+			_ = cmd.Process.Kill()
+			<-done
+			if !quiet {
+				fmt.Fprintln(os.Stderr)
+			}
+			return result, fmt.Errorf("indexed worker exceeded absolute limit %s", indexedExportTimeout(fileSize))
+		case <-idleTicker.C:
+			info, statErr := os.Stat(heartbeatPath)
+			if statErr == nil && time.Since(info.ModTime()) <= indexedIdleTimeout {
+				continue
+			}
+			_ = cmd.Process.Kill()
+			<-done
+			if !quiet {
+				fmt.Fprintln(os.Stderr)
+			}
+			return result, fmt.Errorf("indexed worker idle for %s", indexedIdleTimeout)
 		}
-	case <-timer.C:
-		_ = cmd.Process.Kill()
-		<-done
-		if !quiet {
-			fmt.Fprintln(os.Stderr)
-		}
-		return result, fmt.Errorf("indexed worker exceeded %s", indexedExportTimeout)
 	}
+
+finished:
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		return result, fmt.Errorf("decode indexed worker report: %w", err)
 	}
@@ -529,12 +607,41 @@ func runIndexedExportWithTimeout(source, output string, recovery bool, progress 
 	return result, nil
 }
 
-func runIndexedWorker(source, output string, recovery, quiet, fullEML bool) {
+func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, heartbeatFile, journalFile string) {
 	var progress func(done, total int)
 	if !quiet {
 		progress = func(done, total int) { printProgress("standard mailbox export", done, total) }
 	}
-	result, err := safeIndexedExport(source, output, recovery, progress, fullEML)
+	var heartbeat func()
+	if heartbeatFile != "" {
+		heartbeat = func() { _ = os.Chtimes(heartbeatFile, time.Now(), time.Now()) }
+	}
+	var item func(gopst.MessageStatus)
+	var journalErr error
+	if journalFile != "" {
+		journal, openErr := session.OpenJournal(journalFile)
+		if openErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", openErr)
+			os.Exit(1)
+		}
+		defer journal.Close()
+		item = func(status gopst.MessageStatus) {
+			if journalErr != nil {
+				return
+			}
+			journalErr = journal.Append(session.ItemEntry{
+				Identity: status.Identity,
+				Kind:     "message",
+				Folder:   status.Folder,
+				Status:   status.Outcome,
+				Error:    status.Error,
+			})
+		}
+	}
+	result, err := safeIndexedExport(source, output, recovery, heartbeat, progress, fullEML, item, nil)
+	if err == nil && journalErr != nil {
+		err = journalErr
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -545,7 +652,7 @@ func runIndexedWorker(source, output string, recovery, quiet, fullEML bool) {
 	}
 }
 
-func runNativeWorker(source, output string, quiet, fullEML bool) {
+func runNativeWorker(source, output string, quiet, fullEML bool, workDir string) {
 	info, err := os.Stat(source)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "native worker: stat source: %v\n", err)
@@ -561,7 +668,12 @@ func runNativeWorker(source, output string, quiet, fullEML bool) {
 			printProgress(userProgressPhase(phase), done, total)
 		}
 	}
-	result, err := safeNativeExport(source, output, h, info.Size(), defaultNativeLimits(fullEML), progress)
+	limits := defaultNativeLimits(fullEML)
+	limits.WorkDir = workDir
+	if limits.WorkDir == "" {
+		limits.WorkDir = filepath.Join(filepath.Dir(output), ".ostom", "native-work")
+	}
+	result, err := safeNativeExport(source, output, h, info.Size(), limits, progress)
 	if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
 		fmt.Fprintf(os.Stderr, "encode native worker report: %v\n", encodeErr)
 		os.Exit(1)
@@ -670,7 +782,7 @@ func trimWorkerError(value string) string {
 	return value
 }
 
-func safeIndexedExport(source, output string, recovery bool, progress func(done, total int), fullEML bool) (result gopst.Report, err error) {
+func safeIndexedExport(source, output string, recovery bool, heartbeat func(), progress func(done, total int), fullEML bool, item func(gopst.MessageStatus), skip func(string) bool) (result gopst.Report, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("go-pst backend panic: %v", recovered)
@@ -680,7 +792,7 @@ func safeIndexedExport(source, output string, recovery bool, progress func(done,
 	if fullEML {
 		mode = gopst.EMLAll
 	}
-	return gopst.ExportWithProgressMode(source, output, nil, 0, recovery, progress, mode)
+	return gopst.ExportWithProgressModeAndCallbacks(source, output, heartbeat, 0, recovery, progress, mode, item, skip)
 }
 
 func safeNativeExport(source, output string, h format.Header, fileSize int64, limits native.Limits, progress func(phase string, done, total int)) (result native.PipelineReport, err error) {

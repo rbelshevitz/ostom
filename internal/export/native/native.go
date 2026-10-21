@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"ostom/internal/export/mbox"
 	"ostom/internal/format"
 	"ostom/internal/recovery/manifest"
+	recoverySession "ostom/internal/recovery/session"
 )
 
 // Report describes the handoff from native collection to mbox export.
@@ -44,7 +46,13 @@ type Limits struct {
 	MaxAttachmentBytes int
 	MaxErrorSamples    int
 	WriteEML           bool
+	WorkDir            string
 }
+
+const (
+	streamBatchMessages = 64
+	streamBatchBytes    = 8 << 20
+)
 
 type PipelineReport struct {
 	Mode       string                             `json:"mode"`
@@ -61,68 +69,293 @@ func RecoverAndExport(name, root string, h format.Header, fileSize int64, limits
 // RecoverAndExportWithProgress is the CLI-facing form with native collection
 // progress checkpoints.
 func RecoverAndExportWithProgress(name, root string, h format.Header, fileSize int64, limits Limits, progress func(done, total int)) (PipelineReport, error) {
-	collection, err := format.CollectIndexedRecoveredMessagesWithAttachmentLimit(
-		name,
-		h,
-		fileSize,
-		limits.MaxNodes,
-		limits.MaxBlocks,
-		limits.MaxBytes,
-		limits.MaxRecords,
-		limits.MaxMessages,
-		limits.MaxBodyBytes,
-		attachmentLimit(limits),
-		limits.MaxErrorSamples,
-		progress,
-	)
-	report := PipelineReport{Mode: collection.Mode, Collection: collection}
-	if err != nil {
-		if collection.Cleanup != nil {
-			_ = collection.Cleanup()
+	return recoverAndExportStreaming(name, root, h, fileSize, limits, func(done, total int) {
+		if progress != nil {
+			progress(done, total)
 		}
-		return report, err
-	}
-	defer func() {
-		if collection.Cleanup != nil {
-			_ = collection.Cleanup()
-		}
-	}()
-	report.Export, err = ExportWithProgressMode(root, collection.Messages, nil, limits.WriteEML)
-	markSalvageManifest(&report)
-	return report, err
+	}, nil)
 }
 
 // RecoverAndExportWithPhaseProgress reports collection and output separately
 // so a user-facing progress indicator never mistakes export work for a stall.
 func RecoverAndExportWithPhaseProgress(name, root string, h format.Header, fileSize int64, limits Limits, progress func(phase string, done, total int)) (PipelineReport, error) {
-	collection, err := format.CollectIndexedRecoveredMessagesWithAttachmentLimit(
-		name, h, fileSize, limits.MaxNodes, limits.MaxBlocks, limits.MaxBytes,
-		limits.MaxRecords, limits.MaxMessages, limits.MaxBodyBytes, attachmentLimit(limits), limits.MaxErrorSamples,
-		func(done, total int) {
-			if progress != nil {
-				progress("collecting native candidates", done, total)
+	return recoverAndExportStreaming(name, root, h, fileSize, limits, nil, progress)
+}
+
+// recoverAndExportStreaming keeps at most one recovered message in memory.
+// The legacy collection API remains available for callers that need the full
+// result list, while the CLI uses this path for large stores.
+func recoverAndExportStreaming(name, root string, h format.Header, fileSize int64, limits Limits, simpleProgress func(done, total int), phaseProgress func(phase string, done, total int)) (PipelineReport, error) {
+	if limits.WorkDir == "" {
+		limits.WorkDir = filepath.Join(filepath.Dir(root), ".ostom", "native-work")
+	}
+	if err := os.MkdirAll(limits.WorkDir, 0o700); err != nil {
+		return PipelineReport{}, fmt.Errorf("create native work area: %w", err)
+	}
+	committedBatches, completedIdentities := loadCommittedBatches(limits.WorkDir)
+	exportReport := Report{Backend: "native-recovered", EMLMode: "none"}
+	if limits.WriteEML {
+		exportReport.EMLMode = "all"
+	}
+	exported := 0
+	batch := make([]format.RecoveredMessage, 0, streamBatchMessages)
+	batchBytes := 0
+	batchNumber := 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		var batchDir string
+		for {
+			batchNumber++
+			batchDir = filepath.Join(limits.WorkDir, "batches", fmt.Sprintf("%06d", batchNumber))
+			if _, statErr := os.Stat(batchDir); os.IsNotExist(statErr) {
+				break
 			}
-		},
+		}
+		if err := os.MkdirAll(batchDir, 0o700); err != nil {
+			return fmt.Errorf("create native batch: %w", err)
+		}
+		batchRoot := filepath.Join(batchDir, "output", filepath.Base(root))
+		one, err := ExportWithProgressMode(batchRoot, batch, nil, limits.WriteEML)
+		if err != nil {
+			return err
+		}
+		bytes, checksum, err := recoverySession.DigestArtifact(batchDir, "output")
+		if err != nil {
+			return fmt.Errorf("verify native batch: %w", err)
+		}
+		identities := make([]string, 0, len(batch))
+		for _, record := range one.ManifestRecords {
+			if record.Kind == "message" && record.Status != "skipped" && record.Identity != "" {
+				identities = append(identities, record.Identity)
+			}
+		}
+		if len(identities) == 0 {
+			identities = append(identities, "")
+		}
+		record := recoverySession.Batch{
+			Number: batchNumber, Status: "committed", Artifact: "output",
+			FirstIdentity: identities[0], LastIdentity: identities[len(identities)-1],
+			Identities: identities, Items: len(batch), Bytes: bytes, SHA256: checksum,
+		}
+		if err := recoverySession.WriteBatchRecord(batchDir, record); err != nil {
+			return fmt.Errorf("commit native batch: %w", err)
+		}
+		if err := recoverySession.VerifyArtifact(record, batchDir); err != nil {
+			return fmt.Errorf("recheck native batch: %w", err)
+		}
+		committedBatches = append(committedBatches, batchDir)
+		mergeReports(&exportReport, &one)
+		exported += len(batch)
+		batch = batch[:0]
+		batchBytes = 0
+		if phaseProgress != nil {
+			phaseProgress("writing native recovery output", exported, 0)
+		} else if simpleProgress != nil {
+			simpleProgress(exported, 0)
+		}
+		return err
+	}
+	consume := func(message format.RecoveredMessage) error {
+		identity := fmt.Sprintf("native-bid-%016X", message.BID)
+		if completedIdentities[identity] {
+			return nil
+		}
+		messageBytes := len(message.Body)
+		for _, attachment := range message.Attachments {
+			messageBytes += len(attachment.Data)
+		}
+		batch = append(batch, message)
+		batchBytes += messageBytes
+		if len(batch) >= streamBatchMessages || batchBytes >= streamBatchBytes {
+			return flush()
+		}
+		return nil
+	}
+	collectionProgress := func(done, total int) {
+		if phaseProgress != nil {
+			phaseProgress("collecting native candidates", done, total)
+		} else if simpleProgress != nil {
+			simpleProgress(done, total)
+		}
+	}
+	collection, err := format.CollectIndexedRecoveredMessagesWithConsumerInDir(
+		name, h, fileSize, limits.MaxNodes, limits.MaxBlocks, limits.MaxBytes,
+		limits.MaxRecords, limits.MaxMessages, limits.MaxBodyBytes, attachmentLimit(limits),
+		limits.MaxErrorSamples, collectionProgress, limits.WorkDir, consume,
 	)
-	report := PipelineReport{Mode: collection.Mode, Collection: collection}
+	report := PipelineReport{Mode: collection.Mode, Collection: collection, Export: exportReport}
 	if err != nil {
+		_ = flush()
 		if collection.Cleanup != nil {
 			_ = collection.Cleanup()
 		}
 		return report, err
 	}
-	defer func() {
+	if err := flush(); err != nil {
 		if collection.Cleanup != nil {
 			_ = collection.Cleanup()
 		}
-	}()
-	report.Export, err = ExportWithProgressMode(root, collection.Messages, func(done, total int) {
-		if progress != nil {
-			progress("writing native recovery output", done, total)
-		}
-	}, limits.WriteEML)
+		return report, err
+	}
+	if err := publishBatches(root, limits.WorkDir, committedBatches, limits.WriteEML); err != nil {
+		return report, err
+	}
+	if collection.Cleanup != nil {
+		_ = collection.Cleanup()
+	}
+	finishReport(&report.Export)
 	markSalvageManifest(&report)
-	return report, err
+	return report, nil
+}
+
+func loadCommittedBatches(workDir string) ([]string, map[string]bool) {
+	completed := make(map[string]bool)
+	paths := make([]string, 0)
+	entries, err := os.ReadDir(filepath.Join(workDir, "batches"))
+	if err != nil {
+		return paths, completed
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		directory := filepath.Join(workDir, "batches", entry.Name())
+		record, err := recoverySession.ReadBatchRecord(directory)
+		if err != nil || record.Status != "committed" || recoverySession.VerifyArtifact(record, directory) != nil {
+			continue
+		}
+		paths = append(paths, directory)
+		for _, identity := range record.Identities {
+			completed[identity] = true
+		}
+	}
+	sort.Strings(paths)
+	return paths, completed
+}
+
+func mergeReports(dst, src *Report) {
+	dst.Attempted += src.Attempted
+	dst.Written += src.Written
+	dst.Incomplete += src.Incomplete
+	dst.Attachments += src.Attachments
+	dst.IncompleteAttachments += src.IncompleteAttachments
+	dst.EMLWritten += src.EMLWritten
+	dst.EMLFailed += src.EMLFailed
+	dst.Failed += src.Failed
+	dst.ManifestRecords = append(dst.ManifestRecords, src.ManifestRecords...)
+	for _, message := range src.Errors {
+		appendExportErrorText(dst, message)
+	}
+}
+
+func appendExportErrorText(report *Report, message string) {
+	if len(report.Errors) < 32 {
+		report.Errors = append(report.Errors, message)
+	}
+}
+
+func finishReport(report *Report) {
+	report.Status = "completed"
+	if report.Failed > 0 || report.EMLFailed > 0 {
+		report.Status = "completed with output errors"
+	}
+	report.Summary = []string{
+		fmt.Sprintf("found %d native message candidates", report.Attempted),
+		fmt.Sprintf("wrote %d messages to mbox and %d messages to EML", report.Written, report.EMLWritten),
+		fmt.Sprintf("found %d attachments; %d were partial or unavailable", report.Attachments, report.IncompleteAttachments),
+	}
+}
+
+func publishBatches(root, workDir string, batches []string, includeEML bool) error {
+	if len(batches) == 0 {
+		return nil
+	}
+	publishDir, err := os.MkdirTemp(workDir, "native-publish-")
+	if err != nil {
+		return fmt.Errorf("create native publish area: %w", err)
+	}
+	defer os.RemoveAll(publishDir)
+	stagedRoot := filepath.Join(publishDir, filepath.Base(root))
+	for _, batchDir := range batches {
+		source := filepath.Join(batchDir, "output", filepath.Base(root))
+		if err := appendTree(source, stagedRoot); err != nil {
+			return fmt.Errorf("assemble native batches: %w", err)
+		}
+	}
+	names := []string{"OSTOM Native Recovered"}
+	if includeEML {
+		names = append(names, "OSTOM Native Recovered EML")
+	}
+	for _, name := range names {
+		staged := filepath.Join(stagedRoot, name)
+		if _, err := os.Stat(staged); os.IsNotExist(err) {
+			continue
+		}
+		if err := replaceTree(filepath.Join(root, name), staged, workDir); err != nil {
+			return fmt.Errorf("publish native result: %w", err)
+		}
+	}
+	return nil
+}
+
+func appendTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := destination
+		if relative != "." {
+			target = filepath.Join(destination, relative)
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		input, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		_, copyErr := io.Copy(output, input)
+		syncErr := output.Sync()
+		closeOutErr := output.Close()
+		closeInErr := input.Close()
+		for _, candidate := range []error{copyErr, syncErr, closeOutErr, closeInErr} {
+			if candidate != nil {
+				return candidate
+			}
+		}
+		return nil
+	})
+}
+
+func replaceTree(target, staged, workDir string) error {
+	backup := filepath.Join(workDir, ".native-old-"+filepath.Base(target))
+	_ = os.RemoveAll(backup)
+	if _, err := os.Stat(target); err == nil {
+		if err := os.Rename(target, backup); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(staged, target); err != nil {
+		if _, backupErr := os.Stat(backup); backupErr == nil {
+			_ = os.Rename(backup, target)
+		}
+		return err
+	}
+	return os.RemoveAll(backup)
 }
 
 func markSalvageManifest(report *PipelineReport) {
