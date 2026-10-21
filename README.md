@@ -31,7 +31,7 @@ read-only and writes exports only to the destination you specify. Recovery is
 best-effort, so review the exported messages and attachments before relying on
 them.
 
-## Quick start
+## Quick guide
 
 If you only need to rescue mail, you do not need to understand the file format
 or build the source code. Download the latest [Windows amd64 release](https://github.com/rbelshevitz/ostom/releases), close Outlook, and make a copy of the OST/PST file.
@@ -85,9 +85,9 @@ be incomplete, and some may duplicate indexed items.
 
 Indexed mail and readable attachments are exported in the usual folder
 hierarchy. A public 4 KiB OST smoke test now yields 13 bounded native message
-candidates; complete attachment export remains unproven
-without failures. Extended recovery can find additional candidates, but complex
-attachment layouts are still being explored.
+candidates; complete attachment export remains unproven. Extended recovery can
+find additional candidates, but complex attachment layouts are still being
+explored.
 
 ### Attachment handling
 
@@ -167,6 +167,8 @@ Progress events include `done`, `total`, `total_known`, `unit`, and `basis`.
 They describe the current phase rather than pretending to be an exact
 percentage of the PST/OST byte size; when the total is unknown,
 `total_known=false`.
+
+### Windows GUI
 
 On Windows 10/11 x64, the project also provides `ostom-gui.exe`, a compact
 graphical interface for the `ostom.exe` recovery CLI. The GUI selects a
