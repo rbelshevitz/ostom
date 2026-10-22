@@ -5,32 +5,59 @@ OSTOM is a read-only, local-first recovery tool for damaged Outlook
 still readable; it must never imply that a server copy is complete or alter the
 source file.
 
-## Short plan — read this first
+## Canonical execution queue — read this first
 
-### Now
+The queue below is the only active task list. The sections that follow are
+implementation notes and evidence, not a second queue.
 
-- [ ] Design resumable recovery for large OST/PST files, including occasional
-  5, 15, and 20+ GB cases: persist inventory, per-item outcomes, checkpoints,
-  and enough provenance to resume without repeating completed work.
-- [ ] Establish a bounded healthy-PST/OST indexed-export baseline independent
-  of native recovery. Verify folder/message/attachment counts and checksums;
-  document `go-pst` limitations without treating it as a recovery reference.
+### 1. Verify the current checkpoint — next session
 
-### Next
+- [ ] Run one full `go test -trimpath ./...` with corrected `GOROOT` and
+  `GOPATH`; record failures only, without adding unrelated features.
+- [ ] Confirm the committed tree is clean and the long-run mbox smoke remains
+  green after the full run.
 
-- [ ] Stream arbitrary native XBLOCK/XXBLOCK/SLBLOCK attachment trees,
-  including 4 KiB variants.
-- [ ] Add a separate salvage path for missing or damaged indexes.
-- [ ] Make folder, message, and attachment damage independently visible, with
-  stable exit codes and a quick scan that skips attachment payloads.
+Done means the current commit is reproducibly testable in a fresh Go process.
 
-### Later
+### 2. Finish resumable inventory and manifest
 
+- [ ] Stream a durable inventory of discovered folders, messages, attachments,
+  and native candidates instead of retaining the complete worklist in memory.
+- [ ] Make the append-only item journal the authoritative source for per-item
+  status, route, output, byte counts, checksum, and error evidence.
+- [ ] Add interruption/resume coverage for a large synthetic source and refuse
+  to mix different source fingerprints or incompatible options.
+
+Done means an interrupted run can safely retry unfinished items without
+duplicating durable output or losing provenance.
+
+### 3. Complete native attachment recovery
+
+- [ ] Stream arbitrary XBLOCK/XXBLOCK/SLBLOCK trees, including 4 KiB variants.
+- [ ] Bind each attachment to its message and expose partial attachment status,
+  declared/readable/exported bytes, and checksum evidence.
+- [ ] Validate the path against real attachment-bearing OST/PST samples.
+
+Done means readable attachment payloads are exported or explicitly reported as
+partial/failed without hiding structural damage.
+
+### 4. Expand evidence coverage
+
+- [ ] Establish a bounded healthy-PST/OST indexed baseline independent of
+  native recovery, with folder/message/attachment counts and checksums.
 - [ ] Validate additional real OST samples and compression/encryption variants.
 - [ ] Consider an external, licence-reviewed comparison reference such as libpff.
-- [ ] Keep PST/OST generation outside the Go runtime.
 
-The sections below are reference notes and evidence, not a second task queue.
+Done means limitations and recovery claims are backed by repeatable fixtures or
+explicitly recorded evidence gaps.
+
+PST/OST generation remains outside the Go runtime.
+
+### Completed foundation
+
+- [x] Add a separate salvage path for missing or damaged indexes.
+- [x] Make folder, message, and attachment damage independently visible, with
+  stable exit codes and a quick scan that skips attachment payloads.
 
 ### Current implementation checkpoint
 
@@ -76,7 +103,12 @@ The sections below are reference notes and evidence, not a second task queue.
   remaining append-only inventory/manifest work without mixing it with new
   recovery features.
 
-## Large-file recovery — resumable CLI pipeline
+## Implementation detail checklist — historical/reference
+
+The checkboxes in the following sections preserve implementation history. Use
+the canonical execution queue above when deciding what to do next.
+
+### Large-file recovery — resumable CLI pipeline
 
 Large OST/PST files must be processed as a resumable job rather than one
 unbounded command. This is a CLI/core concern and does not belong to the GUI
