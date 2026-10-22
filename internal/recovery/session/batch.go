@@ -72,6 +72,18 @@ func VerifyArtifact(batch Batch, directory string) error {
 	if batch.SHA256 != "" && batch.SHA256 != checksum {
 		return fmt.Errorf("batch artifact checksum mismatch")
 	}
+	if batch.Manifest != "" {
+		manifestBytes, manifestChecksum, err := DigestArtifact(directory, batch.Manifest)
+		if err != nil {
+			return fmt.Errorf("verify batch manifest: %w", err)
+		}
+		if batch.ManifestBytes != manifestBytes {
+			return fmt.Errorf("batch manifest size mismatch: got %d, want %d", manifestBytes, batch.ManifestBytes)
+		}
+		if batch.ManifestSHA256 != "" && batch.ManifestSHA256 != manifestChecksum {
+			return fmt.Errorf("batch manifest checksum mismatch")
+		}
+	}
 	return nil
 }
 

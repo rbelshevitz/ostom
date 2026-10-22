@@ -2,7 +2,9 @@
 package native
 
 import (
+	"bufio"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -92,8 +94,12 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 	if err := os.MkdirAll(limits.WorkDir, 0o700); err != nil {
 		return PipelineReport{}, fmt.Errorf("create native work area: %w", err)
 	}
+	if err := discardUncommittedBatches(limits.WorkDir); err != nil {
+		return PipelineReport{}, err
+	}
 	committedBatches, completedIdentities := loadCommittedBatches(limits.WorkDir)
 	exportReport := Report{Backend: "native-recovered", EMLMode: "none"}
+	manifestPath := filepath.Join(limits.WorkDir, "native-manifest.jsonl")
 	if limits.WriteEML {
 		exportReport.EMLMode = "all"
 	}
@@ -105,25 +111,38 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 		if len(batch) == 0 {
 			return nil
 		}
+		batchesDir := filepath.Join(limits.WorkDir, "batches")
+		if err := os.MkdirAll(batchesDir, 0o700); err != nil {
+			return fmt.Errorf("create native batch area: %w", err)
+		}
 		var batchDir string
 		for {
 			batchNumber++
-			batchDir = filepath.Join(limits.WorkDir, "batches", fmt.Sprintf("%06d", batchNumber))
+			batchDir = filepath.Join(batchesDir, fmt.Sprintf("%06d", batchNumber))
 			if _, statErr := os.Stat(batchDir); os.IsNotExist(statErr) {
 				break
 			}
 		}
-		if err := os.MkdirAll(batchDir, 0o700); err != nil {
-			return fmt.Errorf("create native batch: %w", err)
+		stagingDir, err := os.MkdirTemp(batchesDir, ".writing-")
+		if err != nil {
+			return fmt.Errorf("create native batch staging area: %w", err)
 		}
-		batchRoot := filepath.Join(batchDir, "output", filepath.Base(root))
+		defer os.RemoveAll(stagingDir)
+		batchRoot := filepath.Join(stagingDir, "output", filepath.Base(root))
 		one, err := ExportWithProgressMode(batchRoot, batch, nil, limits.WriteEML)
 		if err != nil {
 			return err
 		}
-		bytes, checksum, err := recoverySession.DigestArtifact(batchDir, "output")
+		bytes, checksum, err := recoverySession.DigestArtifact(stagingDir, "output")
 		if err != nil {
 			return fmt.Errorf("verify native batch: %w", err)
+		}
+		if err := writeManifestFile(filepath.Join(stagingDir, "manifest.jsonl"), one.ManifestRecords); err != nil {
+			return fmt.Errorf("write native batch manifest: %w", err)
+		}
+		manifestBytes, manifestChecksum, err := recoverySession.DigestArtifact(stagingDir, "manifest.jsonl")
+		if err != nil {
+			return fmt.Errorf("verify native batch manifest: %w", err)
 		}
 		identities := make([]string, 0, len(batch))
 		for _, record := range one.ManifestRecords {
@@ -138,16 +157,23 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 			Number: batchNumber, Status: "committed", Artifact: "output",
 			FirstIdentity: identities[0], LastIdentity: identities[len(identities)-1],
 			Identities: identities, Items: len(batch), Bytes: bytes, SHA256: checksum,
+			Manifest: "manifest.jsonl", ManifestBytes: manifestBytes, ManifestSHA256: manifestChecksum,
 		}
-		if err := recoverySession.WriteBatchRecord(batchDir, record); err != nil {
+		if err := recoverySession.WriteBatchRecord(stagingDir, record); err != nil {
 			return fmt.Errorf("commit native batch: %w", err)
 		}
-		if err := recoverySession.VerifyArtifact(record, batchDir); err != nil {
+		if err := recoverySession.VerifyArtifact(record, stagingDir); err != nil {
 			return fmt.Errorf("recheck native batch: %w", err)
+		}
+		if err := os.Rename(stagingDir, batchDir); err != nil {
+			return fmt.Errorf("finalize native batch: %w", err)
 		}
 		committedBatches = append(committedBatches, batchDir)
 		mergeReports(&exportReport, &one)
 		exported += len(batch)
+		for index := range batch {
+			batch[index] = format.RecoveredMessage{}
+		}
 		batch = batch[:0]
 		batchBytes = 0
 		if phaseProgress != nil {
@@ -188,25 +214,35 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 	report := PipelineReport{Mode: collection.Mode, Collection: collection, Export: exportReport}
 	if err != nil {
 		_ = flush()
+		_ = assembleManifest(manifestPath, committedBatches)
 		if collection.Cleanup != nil {
 			_ = collection.Cleanup()
 		}
 		return report, err
 	}
 	if err := flush(); err != nil {
+		_ = assembleManifest(manifestPath, committedBatches)
 		if collection.Cleanup != nil {
 			_ = collection.Cleanup()
 		}
 		return report, err
 	}
 	if err := publishBatches(root, limits.WorkDir, committedBatches, limits.WriteEML); err != nil {
+		_ = assembleManifest(manifestPath, committedBatches)
+		return report, err
+	}
+	if err := assembleManifest(manifestPath, committedBatches); err != nil {
 		return report, err
 	}
 	if collection.Cleanup != nil {
 		_ = collection.Cleanup()
 	}
 	finishReport(&report.Export)
-	markSalvageManifest(&report)
+	if report.Mode == "salvage" {
+		if err := markSalvageManifestFiles(manifestPath, committedBatches); err != nil {
+			return report, err
+		}
+	}
 	return report, nil
 }
 
@@ -223,7 +259,7 @@ func loadCommittedBatches(workDir string) ([]string, map[string]bool) {
 		}
 		directory := filepath.Join(workDir, "batches", entry.Name())
 		record, err := recoverySession.ReadBatchRecord(directory)
-		if err != nil || record.Status != "committed" || recoverySession.VerifyArtifact(record, directory) != nil {
+		if err != nil || record.Status != "committed" || record.Manifest == "" || recoverySession.VerifyArtifact(record, directory) != nil {
 			continue
 		}
 		paths = append(paths, directory)
@@ -235,6 +271,25 @@ func loadCommittedBatches(workDir string) ([]string, map[string]bool) {
 	return paths, completed
 }
 
+func discardUncommittedBatches(workDir string) error {
+	entries, err := os.ReadDir(filepath.Join(workDir, "batches"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect native batches: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || len(entry.Name()) < len(".writing-") || entry.Name()[:len(".writing-")] != ".writing-" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(workDir, "batches", entry.Name())); err != nil {
+			return fmt.Errorf("discard incomplete native batch: %w", err)
+		}
+	}
+	return nil
+}
+
 func mergeReports(dst, src *Report) {
 	dst.Attempted += src.Attempted
 	dst.Written += src.Written
@@ -244,10 +299,87 @@ func mergeReports(dst, src *Report) {
 	dst.EMLWritten += src.EMLWritten
 	dst.EMLFailed += src.EMLFailed
 	dst.Failed += src.Failed
-	dst.ManifestRecords = append(dst.ManifestRecords, src.ManifestRecords...)
 	for _, message := range src.Errors {
 		appendExportErrorText(dst, message)
 	}
+}
+
+func writeManifestFile(path string, records []manifest.Record) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(file)
+	for _, record := range records {
+		if err := encoder.Encode(record); err != nil {
+			_ = file.Close()
+			return err
+		}
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func assembleManifest(path string, batches []string) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".native-manifest-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	for _, batchDir := range batches {
+		input, err := os.Open(filepath.Join(batchDir, "manifest.jsonl"))
+		if err != nil {
+			_ = temporary.Close()
+			return err
+		}
+		_, copyErr := io.Copy(temporary, input)
+		closeErr := input.Close()
+		if copyErr != nil {
+			_ = temporary.Close()
+			return copyErr
+		}
+		if closeErr != nil {
+			_ = temporary.Close()
+			return closeErr
+		}
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+// ReadManifest loads the durable native manifest only when the caller needs
+// to create the final combined report. Export itself never retains these rows.
+func ReadManifest(path string) ([]manifest.Record, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	var records []manifest.Record
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		var record manifest.Record
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			return nil, err
+		}
+		record.Errors = append([]string(nil), record.Errors...)
+		records = append(records, record)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func appendExportErrorText(report *Report, message string) {
@@ -283,6 +415,9 @@ func publishBatches(root, workDir string, batches []string, includeEML bool) err
 		if err := appendTree(source, stagedRoot); err != nil {
 			return fmt.Errorf("assemble native batches: %w", err)
 		}
+	}
+	if _, _, err := recoverySession.DigestArtifact(publishDir, filepath.Base(root)); err != nil {
+		return fmt.Errorf("verify assembled native output: %w", err)
 	}
 	names := []string{"OSTOM Native Recovered"}
 	if includeEML {
@@ -358,14 +493,70 @@ func replaceTree(target, staged, workDir string) error {
 	return os.RemoveAll(backup)
 }
 
-func markSalvageManifest(report *PipelineReport) {
-	if report == nil || report.Mode != "salvage" {
-		return
+func markSalvageManifestFiles(path string, batches []string) error {
+	for _, batchDir := range batches {
+		manifestFile := filepath.Join(batchDir, "manifest.jsonl")
+		if err := rewriteSalvageManifestFile(manifestFile); err != nil {
+			return err
+		}
+		record, err := recoverySession.ReadBatchRecord(batchDir)
+		if err != nil {
+			return err
+		}
+		record.ManifestBytes, record.ManifestSHA256, err = recoverySession.DigestArtifact(batchDir, "manifest.jsonl")
+		if err != nil {
+			return err
+		}
+		if err := recoverySession.WriteBatchRecord(batchDir, record); err != nil {
+			return err
+		}
+		if err := recoverySession.VerifyArtifact(record, batchDir); err != nil {
+			return err
+		}
 	}
-	for index := range report.Export.ManifestRecords {
-		report.Export.ManifestRecords[index].Source = "native-salvage"
-		report.Export.ManifestRecords[index].Route = "native-salvage"
+	return assembleManifest(path, batches)
+}
+
+func rewriteSalvageManifestFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
 	}
+	defer file.Close()
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".native-salvage-manifest-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	encoder := json.NewEncoder(temporary)
+	for scanner.Scan() {
+		var record manifest.Record
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			_ = temporary.Close()
+			return err
+		}
+		record.Source = "native-salvage"
+		record.Route = "native-salvage"
+		if err := encoder.Encode(record); err != nil {
+			_ = temporary.Close()
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func attachmentLimit(limits Limits) int {
@@ -456,43 +647,42 @@ func ExportWithProgressMode(root string, messages []format.RecoveredMessage, pro
 			}
 			continue
 		}
-		raw, renderErr := writer.RenderWithSource(
-			message.Subject,
-			message.Sender,
-			"",
-			"",
-			fmt.Sprintf("<ostom-native-%X@local>", message.BID),
-			date,
-			string(message.Body),
-			attachments,
-			"native-recovered",
-		)
-		if renderErr != nil {
-			report.EMLFailed++
-			appendExportError(&report, message.BID, "render EML", renderErr)
-			recordNativeManifest(&report, root, message, "partial", "", 0, "", []string{"render EML: " + renderErr.Error()})
-			if progress != nil {
-				progress(index+1, len(messages))
+		var checksum string
+		emlPath, exportedBytes, writeErr := writeEML(root, message.BID, func(out io.Writer) error {
+			digest := sha256.New()
+			hashWriter := io.MultiWriter(out, digest)
+			err := writer.WriteEMLWithSource(
+				hashWriter,
+				message.Subject,
+				message.Sender,
+				"",
+				"",
+				fmt.Sprintf("<ostom-native-%X@local>", message.BID),
+				date,
+				string(message.Body),
+				attachments,
+				"native-recovered",
+			)
+			if err == nil {
+				checksum = fmt.Sprintf("%x", digest.Sum(nil))
 			}
-			continue
-		}
-		emlPath, err := writeEML(root, message.BID, raw)
-		if err != nil {
+			return err
+		})
+		if writeErr != nil {
 			report.EMLFailed++
-			appendExportError(&report, message.BID, "write EML", err)
-			recordNativeManifest(&report, root, message, "partial", "", 0, "", []string{"write EML: " + err.Error()})
+			appendExportError(&report, message.BID, "write EML", writeErr)
+			recordNativeManifest(&report, root, message, "partial", "", 0, "", []string{"write EML: " + writeErr.Error()})
 			if progress != nil {
 				progress(index+1, len(messages))
 			}
 			continue
 		}
 		report.EMLWritten++
-		sum := sha256.Sum256(raw)
 		status := "recovered"
 		if message.Incomplete {
 			status = "partial"
 		}
-		recordNativeManifest(&report, root, message, status, emlPath, int64(len(raw)), fmt.Sprintf("%x", sum[:]), nil)
+		recordNativeManifest(&report, root, message, status, emlPath, exportedBytes, checksum, nil)
 		if progress != nil {
 			progress(index+1, len(messages))
 		}
@@ -509,13 +699,47 @@ func ExportWithProgressMode(root string, messages []format.RecoveredMessage, pro
 	return report, nil
 }
 
-func writeEML(root string, bid uint64, data []byte) (string, error) {
+func writeEML(root string, bid uint64, write func(io.Writer) error) (string, int64, error) {
 	dir := filepath.Join(root, "OSTOM Native Recovered EML")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	path := filepath.Join(dir, fmt.Sprintf("%016X.eml", bid))
-	return path, os.WriteFile(path, data, 0o644)
+	temp, err := os.CreateTemp(dir, fmt.Sprintf(".%016X-*.eml.tmp", bid))
+	if err != nil {
+		return "", 0, err
+	}
+	tempPath := temp.Name()
+	cleanup := func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}
+	if err := write(temp); err != nil {
+		cleanup()
+		return "", 0, err
+	}
+	if err := temp.Sync(); err != nil {
+		cleanup()
+		return "", 0, err
+	}
+	info, err := temp.Stat()
+	if err != nil {
+		cleanup()
+		return "", 0, err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return "", 0, err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(tempPath)
+		return "", 0, err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return "", 0, err
+	}
+	return path, info.Size(), nil
 }
 
 func appendExportError(report *Report, bid uint64, action string, err error) {
@@ -532,7 +756,7 @@ func recordNativeManifest(report *Report, root string, message format.RecoveredM
 		outputPath = filepath.Join(filepath.Base(root), "OSTOM Native Recovered EML", filepath.Base(emlPath))
 	}
 	report.ManifestRecords = append(report.ManifestRecords, manifest.Record{
-		Kind: "message", Source: "native", Identity: fmt.Sprintf("native-bid-%016X", message.BID), Route: "native-recovered",
+		Kind: "message", Source: "native", Identity: fmt.Sprintf("native-bid-%016X", message.BID), Route: "native-recovered", MessageID: message.MessageID,
 		NID: fmt.Sprintf("0x%X", message.NID), BID: fmt.Sprintf("0x%X", message.BID), Status: status,
 		FolderPath: filepath.Join(message.FolderPath...), ReadableBytes: int64(len(message.Body)), ExportedBytes: exportedBytes, SHA256: checksum, OutputPath: outputPath, Errors: messageErrors,
 	})

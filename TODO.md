@@ -32,6 +32,50 @@ source file.
 
 The sections below are reference notes and evidence, not a second task queue.
 
+### Current implementation checkpoint
+
+- Native message assembly is bounded to one collected message plus a batch of
+  at most 64 messages or 8 MiB of in-memory payload; large attachment bodies
+  are reopened from the work-area spool instead of retained in RAM.
+- Native batches are staged, verified, atomically committed, and cleared from
+  memory after commit; interrupted batches are discarded and retried.
+- Indexed output has durable `in_progress`/`exported` checkpoints and repairs
+  incomplete output before retry. Only durably exported identities are skipped.
+- Worker stderr is capped at 64 KiB, and collector close releases message,
+  attachment, and identity references as well as spool files.
+- Optional indexed `go-pst` output is isolated under `Indexed/` whenever native
+  recovery runs, so its append-only mbox writer cannot duplicate native output.
+- `-native-only` now provides an explicit production mode for damaged stores:
+  native recovery, durable manifest, and no `go-pst` watchdog or side effects.
+- Remaining proof work is deliberate: real attachment-bearing OST/PST smoke,
+  full native attachment-tree coverage in production, and cross-route dedup.
+- External OST smoke is now repeatable through
+  `scripts/smoke-external-ost.ps1`; its native count assertions are structural
+  by default and can be tightened with corpus-specific minimums. This keeps
+  the freepst no-attachment fixture and the GroupDocs attachment fixture from
+  being conflated.
+- Pinned PST-Builder attachment probe now exists at
+  `scripts/generate-attachment-pst.ps1`; the builder produces a real
+  attachment-bearing PST. The EML-adapter variant now yields one readable EML
+  with the large attachment, while the second message is still lost and the
+  indexed path reports the missing GUID property. This is a partial
+  reader-compatibility smoke, not full PST support; `go-pst` remains an
+  optional indexed backend rather than a recovery reference.
+- The same generator now supports `-NativeOnly`; it verifies that native-only
+  recovery does not create an `Indexed` tree, while preserving a red result if
+  the generated PST has no native-readable candidates.
+- Long-run generator smoke is green at 256 messages / 358 attachments / 51
+  large payloads. The 256-message lazy-attachment mbox smoke is also verified;
+  its slow run exposed per-byte file writes in the MIME line wrapper, which are
+  now buffered. The test passes with the corrected per-process Go environment.
+- Session item-journal records now retain the source identity, and final
+  manifest generation uses it instead of incorrectly treating the route as the
+  source. Targeted `cmd/ostom` and `internal/recovery/session` tests pass.
+- End-of-day checkpoint: pause feature work here. Next session, run one full
+  `go test -trimpath ./...` with corrected `GOROOT`/`GOPATH`, then implement the
+  remaining append-only inventory/manifest work without mixing it with new
+  recovery features.
+
 ## Large-file recovery — resumable CLI pipeline
 
 Large OST/PST files must be processed as a resumable job rather than one
@@ -66,13 +110,13 @@ Implementation order, keeping service data away from the user's folders:
 - [x] Move attachment-body spooling out of anonymous system `Temp` and into
   the session work area; if space is insufficient, stop the current batch
   clearly while preserving already committed batches.
-- [ ] Split the work into self-contained batches and write each batch first to
+- [x] Split the work into self-contained batches and write each batch first to
   an internal temporary destination.
-- [ ] Mark a batch complete only after validation; discard and retry an
+- [x] Mark a batch complete only after validation; discard and retry an
   incomplete batch on the next run.
-- [ ] Build visible mbox output from committed batches into a temporary file,
+- [x] Build visible mbox output from committed batches into a temporary file,
   then replace the previous result with one safe move.
-- [ ] Resume the same job automatically from hidden state; users should not
+- [x] Resume the same job automatically from hidden state; users should not
   need separate commands or service flags.
 
 Do not enable journal-only message skipping before these guarantees exist: a
@@ -86,7 +130,7 @@ truncated.
 - [ ] Write an append-only manifest with a stable source identity, route,
   status, output path, byte counts, checksum, and error evidence for every
   item.
-- [ ] Use explicit item states: `discovered`, `in_progress`, `exported`,
+- [x] Use explicit item states: `discovered`, `in_progress`, `exported`,
   `partial`, `skipped`, and `failed`; treat an interrupted `in_progress` item
   as safely retryable.
 - [ ] Make each batch transactional: write to a temporary destination, verify

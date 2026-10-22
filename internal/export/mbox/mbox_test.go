@@ -2,6 +2,7 @@ package mbox
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -122,6 +123,43 @@ func TestWriteWithSourceStreamsAttachmentToMbox(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("Content-Type: multipart/mixed")) || !bytes.Contains(data, []byte("cGF5bG9hZC0")) {
 		t.Fatalf("streamed mbox message is incomplete: %q", data[:min(len(data), 256)])
+	}
+}
+
+func TestLongAttachmentHeavyMboxPipeline(t *testing.T) {
+	root := t.TempDir()
+	writer, err := New(root, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = 256
+	payload := strings.Repeat("long-pipeline-payload-", 4096)
+	opened := 0
+	for index := 0; index < count; index++ {
+		messageIndex := index
+		attachment := Attachment{
+			Name: "long-pipeline.bin", MimeType: "application/octet-stream", Size: int64(len(payload)),
+			Open: func() (io.ReadCloser, error) {
+				opened++
+				return io.NopCloser(strings.NewReader(payload)), nil
+			},
+		}
+		if err := writer.WriteWithSource([]string{"Inbox"}, "long pipeline", "sender@example.test", "", "", fmt.Sprintf("<long-%d@example.test>", messageIndex), zeroTime(), "body", []Attachment{attachment}, "native-recovered"); err != nil {
+			t.Fatalf("write message %d: %v", index, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, "Inbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened != count {
+		t.Fatalf("lazy attachment opens = %d, want %d", opened, count)
+	}
+	if got := bytes.Count(data, []byte("Message-ID: <long-")); got != count {
+		t.Fatalf("mbox messages = %d, want %d", got, count)
+	}
+	if got := bytes.Count(data, []byte("filename=\"long-pipeline.bin\"")); got != count {
+		t.Fatalf("MIME attachments = %d, want %d", got, count)
 	}
 }
 

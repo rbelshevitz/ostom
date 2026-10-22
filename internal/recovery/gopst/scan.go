@@ -19,7 +19,10 @@ type Report struct {
 	TypeCounts      map[string]int `json:"type_counts,omitempty"`
 	ErrorCategories map[string]int `json:"error_categories,omitempty"`
 	Errors          []string       `json:"errors,omitempty"`
+	ErrorsOmitted   int            `json:"errors_omitted,omitempty"`
 }
+
+const errorLimit = 256
 
 // Scan performs a read-only recovery probe. It counts candidates and errors;
 // it does not export or modify the source file.
@@ -55,7 +58,7 @@ func ScanWithProgress(filename string, progress func(done, total int)) (Report, 
 	for {
 		ok, panicText := safeNext(iter.Next)
 		if panicText != "" {
-			r.Errors = append(r.Errors, "recoverable-node iterator panic: "+panicText)
+			appendError(&r, "recoverable-node iterator panic: "+panicText)
 			recoverablePanic = true
 			break
 		}
@@ -72,7 +75,9 @@ func ScanWithProgress(filename string, progress func(done, total int)) (Report, 
 	r.TriedNodes = iter.TriedNodes
 	r.SuccessfulNodes = iter.SuccessNodes
 	r.FailedNodes = iter.FailedNodes
-	r.Errors = append(r.Errors, iter.ErrorMessages...)
+	for _, message := range iter.ErrorMessages {
+		appendError(&r, message)
+	}
 	r.TypeCounts = make(map[string]int, len(iter.TypeCounts))
 	for kind, count := range iter.TypeCounts {
 		r.TypeCounts[string(kind)] = count
@@ -90,7 +95,7 @@ func ScanWithProgress(filename string, progress func(done, total int)) (Report, 
 		for {
 			ok, panicText := safeNext(orphans.Next)
 			if panicText != "" {
-				r.Errors = append(r.Errors, "orphan iterator panic: "+panicText)
+				appendError(&r, "orphan iterator panic: "+panicText)
 				r.ErrorCategories["panic"]++
 				break
 			}
@@ -100,12 +105,20 @@ func ScanWithProgress(filename string, progress func(done, total int)) (Report, 
 			r.OrphanMessages++
 		}
 		if err := orphans.Err(); err != nil {
-			r.Errors = append(r.Errors, "orphan scan: "+err.Error())
+			appendError(&r, "orphan scan: "+err.Error())
 		}
 	} else {
-		r.Errors = append(r.Errors, "orphan scan unavailable: "+orphanErr.Error())
+		appendError(&r, "orphan scan unavailable: "+orphanErr.Error())
 	}
 	return r, nil
+}
+
+func appendError(report *Report, message string) {
+	if len(report.Errors) < errorLimit {
+		report.Errors = append(report.Errors, message)
+	} else {
+		report.ErrorsOmitted++
+	}
 }
 
 // safeNext converts a third-party iterator panic into a normal end-of-scan

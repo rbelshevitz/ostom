@@ -34,3 +34,39 @@ func TestWriteProducesSortedEquivalentManifests(t *testing.T) {
 		t.Fatalf("unexpected CSV manifest: %s", csvData)
 	}
 }
+
+func TestWriteOwnedManifests(t *testing.T) {
+	dir := t.TempDir()
+	records := []Record{{Kind: "message", Source: "native", Identity: "1", Route: "native", Status: "exported", Errors: []string{"z", "a"}}}
+	if err := WriteOwned(dir, "sample.ost", records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records[0].Errors) != 2 || records[0].Errors[0] != "a" {
+		t.Fatalf("owned records were not normalized: %+v", records)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "recovery-manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriteMarksMessageIDDuplicateCandidatesWithoutDroppingRecords(t *testing.T) {
+	dir := t.TempDir()
+	records := []Record{
+		{Kind: "message", Source: "native", Identity: "native-1", Route: "native-recovered", MessageID: "<same@example.test>", Status: "recovered"},
+		{Kind: "message", Source: "indexed", Identity: "indexed-1", Route: "indexed", MessageID: "<same@example.test>", Status: "exported"},
+	}
+	if err := Write(dir, "sample.ost", records); err != nil {
+		t.Fatal(err)
+	}
+	document, err := os.ReadFile(filepath.Join(dir, "recovery-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(document)
+	if !strings.Contains(text, "\"duplicate_candidates\": 1") || !strings.Contains(text, "\"unique_messages\": 1") || !strings.Contains(text, "\"duplicate_of\"") {
+		t.Fatalf("duplicate candidate was not recorded: %s", document)
+	}
+	if !strings.Contains(text, "\"total\": 2") {
+		t.Fatalf("duplicate candidate dropped a record: %s", document)
+	}
+}

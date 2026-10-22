@@ -79,7 +79,10 @@ func generateEMLCorpus(out string, count int) error {
 }
 
 func fixtureAttachments(index int) []fixtureAttachment {
-	switch index {
+	// Cycle the deterministic attachment profiles so -eml-count can produce a
+	// genuinely attachment-heavy corpus instead of testing only the first five
+	// messages. This keeps the first five fixture identities unchanged.
+	switch ((index - 1) % 5) + 1 {
 	case 1:
 		return []fixtureAttachment{{Name: "mock_document.pdf", MimeType: "application/pdf", Data: []byte("%PDF-1.5\n% OSTOM deterministic fixture\n")}}
 	case 2:

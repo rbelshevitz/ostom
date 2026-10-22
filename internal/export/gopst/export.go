@@ -39,6 +39,7 @@ type Report struct {
 	MessageStatus     []MessageStatus `json:"message_status,omitempty"`
 	StatusOmitted     int             `json:"message_status_omitted,omitempty"`
 	Errors            []string        `json:"errors,omitempty"`
+	ErrorsOmitted     int             `json:"errors_omitted,omitempty"`
 }
 
 // EMLMode controls whether the indexed exporter writes a second per-message
@@ -53,16 +54,34 @@ const (
 // MessageStatus is a bounded per-message export result. Aggregate counters
 // remain complete while the JSON report keeps only a finite status sample.
 type MessageStatus struct {
-	Index       int    `json:"index"`
-	Identity    string `json:"identity,omitempty"`
-	Folder      string `json:"folder"`
-	Subject     string `json:"subject,omitempty"`
-	Outcome     string `json:"outcome"` // exported, partial, failed
-	Attachments int    `json:"attachments,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Index        int    `json:"index"`
+	Identity     string `json:"identity,omitempty"`
+	Folder       string `json:"folder"`
+	MessageID    string `json:"message_id,omitempty"`
+	OutputPath   string `json:"output_path,omitempty"`
+	OutputOffset int64  `json:"output_offset,omitempty"`
+	Subject      string `json:"subject,omitempty"`
+	Outcome      string `json:"outcome"` // exported, partial, failed
+	Attachments  int    `json:"attachments,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 const messageStatusLimit = 4096
+
+const reportErrorLimit = 256
+
+const folderVisitLimit = 100000
+
+func indexedMessageID(message *pst.Message) string {
+	if message == nil {
+		return ""
+	}
+	props, ok := message.Properties.(*properties.Message)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(props.GetInternetMessageId())
+}
 
 func Export(filename, outputDir string) (Report, error) {
 	return ExportWithHeartbeat(filename, outputDir, nil)
@@ -150,7 +169,7 @@ func ExportRecoveredMessagesWithProgress(filename, outputDir string, heartbeat f
 		callHeartbeat(heartbeat)
 		ok, panicText := safeRecoveryNext(iter.Next)
 		if panicText != "" {
-			r.Errors = append(r.Errors, "recovery iterator panic: "+panicText)
+			appendReportError(&r, "recovery iterator panic: "+panicText)
 			break
 		}
 		if !ok {
@@ -183,7 +202,9 @@ func ExportRecoveredMessagesWithProgress(filename, outputDir string, heartbeat f
 		recordMessageStatus(&r, status)
 	}
 	if len(iter.ErrorMessages) > 0 {
-		r.Errors = append(r.Errors, iter.ErrorMessages...)
+		for _, message := range iter.ErrorMessages {
+			appendReportError(&r, message)
+		}
 	}
 	return r, nil
 }
@@ -237,17 +258,20 @@ func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string
 	for _, folder := range children {
 		callHeartbeat(heartbeat)
 		if visited[folder.Identifier] {
-			r.Errors = append(r.Errors, fmt.Sprintf("skip repeated folder %q (identifier %d)", folder.Name, folder.Identifier))
+			appendReportError(r, fmt.Sprintf("skip repeated folder %q (identifier %d)", folder.Name, folder.Identifier))
 			continue
+		}
+		if len(visited) >= folderVisitLimit {
+			return fmt.Errorf("folder traversal limit reached (%d)", folderVisitLimit)
 		}
 		visited[folder.Identifier] = true
 		path := append(append([]string{}, parentPath...), folder.Name)
 		r.Folders++
 		if err := exportFolder(folder, root, emlRoot, path, r, heartbeat, progress, emlMode, item, skip); err != nil {
-			r.Errors = append(r.Errors, err.Error())
+			appendReportError(r, err.Error())
 		}
 		if err := exportChildren(folder, root, emlRoot, path, r, heartbeat, progress, visited, emlMode, item, skip); err != nil {
-			r.Errors = append(r.Errors, err.Error())
+			appendReportError(r, err.Error())
 		}
 	}
 	return nil
@@ -263,6 +287,11 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 		return fmt.Errorf("open mbox %q: %w", filePath, err)
 	}
 	defer f.Close()
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat mbox %q: %w", filePath, err)
+	}
+	messageOffset := fileInfo.Size()
 
 	iter, err := folder.GetMessageIterator()
 	if err != nil {
@@ -277,8 +306,12 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 		}
 		messageIndex := r.MessagesAttempted
 		identity := fmt.Sprintf("indexed-folder-%d-message-%d", folder.Identifier, iter.Value().Identifier)
+		messageID := indexedMessageID(iter.Value())
+		if item != nil {
+			item(MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), MessageID: messageID, OutputPath: filePath, OutputOffset: messageOffset, Outcome: "in_progress"})
+		}
 		if skip != nil && skip(identity) {
-			status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), Outcome: "skipped"}
+			status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), MessageID: messageID, OutputPath: filePath, OutputOffset: messageOffset, Outcome: "skipped"}
 			r.SkippedMessages++
 			recordMessageStatus(r, status)
 			continue
@@ -294,7 +327,7 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 		if err == nil {
 			err = f.Sync()
 		}
-		status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), Subject: subject, Attachments: written}
+		status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), MessageID: messageID, OutputPath: filePath, OutputOffset: messageOffset, Subject: subject, Attachments: written}
 		if err != nil {
 			var emlErr *emlWriteError
 			if errors.As(err, &emlErr) {
@@ -306,12 +339,12 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 				r.MessagesPartial++
 				r.Messages++
 				r.EMLFailed++
-				r.Errors = append(r.Errors, fmt.Sprintf("EML fallback in %q: %v", strings.Join(path, "\\"), err))
+				appendReportError(r, fmt.Sprintf("EML fallback in %q: %v", strings.Join(path, "\\"), err))
 			} else {
 				status.Outcome = "failed"
 				status.Error = err.Error()
 				r.SkippedMessages++
-				r.Errors = append(r.Errors, fmt.Sprintf("message in %q: %v", strings.Join(path, "\\"), err))
+				appendReportError(r, fmt.Sprintf("message in %q: %v", strings.Join(path, "\\"), err))
 			}
 		} else if partial {
 			status.Outcome = "partial"
@@ -332,9 +365,12 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 		if item != nil {
 			item(status)
 		}
+		if updated, statErr := f.Stat(); statErr == nil {
+			messageOffset = updated.Size()
+		}
 	}
 	if err := iter.Err(); err != nil {
-		r.Errors = append(r.Errors, fmt.Sprintf("message iterator in %q: %v", strings.Join(path, "\\"), err))
+		appendReportError(r, fmt.Sprintf("message iterator in %q: %v", strings.Join(path, "\\"), err))
 	}
 	if r.MessagesAttempted == attemptsBefore {
 		r.EmptyFolders++
@@ -354,6 +390,14 @@ func recordMessageStatus(r *Report, status MessageStatus) {
 		r.MessageStatus = append(r.MessageStatus, status)
 	} else {
 		r.StatusOmitted++
+	}
+}
+
+func appendReportError(r *Report, message string) {
+	if len(r.Errors) < reportErrorLimit {
+		r.Errors = append(r.Errors, message)
+	} else {
+		r.ErrorsOmitted++
 	}
 }
 
@@ -477,7 +521,7 @@ func writeMessageContent(lw io.Writer, message *pst.Message, r *Report, source s
 	attachments, err := message.GetAttachmentIterator()
 	if err != nil {
 		if !strings.Contains(err.Error(), "attachments not found") && !strings.Contains(err.Error(), "message has no attachments") {
-			r.Errors = append(r.Errors, "attachment table unavailable: "+err.Error())
+			appendReportError(r, "attachment table unavailable: "+err.Error())
 		}
 		fmt.Fprint(lw, "Content-Type: text/plain; charset=utf-8\r\n\r\n")
 		writeBody(lw, props.GetBody())
@@ -537,7 +581,7 @@ func writeMessageContent(lw io.Writer, message *pst.Message, r *Report, source s
 	if err := attachments.Err(); err != nil {
 		// Keep the message: a damaged attachment table must not discard a
 		// readable message body already written to the mbox.
-		r.Errors = append(r.Errors, "attachment iterator: "+err.Error())
+		appendReportError(r, "attachment iterator: "+err.Error())
 		partial = true
 	}
 	if err := mw.Close(); err != nil {

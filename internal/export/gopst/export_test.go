@@ -27,3 +27,13 @@ func TestMboxLineWriterDoesNotEscapeFromHeader(t *testing.T) {
 		t.Fatalf("got %q", got.String())
 	}
 }
+
+func TestReportErrorsAreBounded(t *testing.T) {
+	var report Report
+	for index := 0; index < reportErrorLimit+17; index++ {
+		appendReportError(&report, "synthetic error")
+	}
+	if len(report.Errors) != reportErrorLimit || report.ErrorsOmitted != 17 {
+		t.Fatalf("unexpected bounded errors: kept=%d omitted=%d", len(report.Errors), report.ErrorsOmitted)
+	}
+}

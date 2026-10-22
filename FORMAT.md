@@ -188,14 +188,23 @@ have been used for local smoke testing (2026-10-18):
 
 These are smoke tests, not exhaustive coverage or a representative mailbox
 corpus. The GroupDocs file was used locally and is not redistributed by OSTOM.
-The opt-in `TestExternal4KOSTCorpusSmoke` test accepts `OSTOM_EXTERNAL_OST` and
-exercises the public indexed streaming path with a supplied file. Run it after
-independently checking the download and its licence:
+The opt-in external smoke accepts `OSTOM_EXTERNAL_OST` and exercises the public
+indexed streaming path with a supplied file. The native baseline is structural
+by default; corpus-specific minimums can be supplied for a known fixture. Run
+it after independently checking the download and its licence:
 
 ```sh
 OSTOM_EXTERNAL_OST=/path/to/example-2013.ost go test -trimpath ./internal/format \
   -run 'TestExternal4K.*CorpusSmoke'
 ```
+
+On Windows, `scripts/smoke-external-ost.ps1` additionally runs the native CLI,
+checks that EML files and `recovery-manifest.jsonl` were written, and accepts
+`-MinimumNodes`, `-MinimumMessages`, and `-MinimumAttachments` for a pinned
+corpus profile. For the attachment-bearing GroupDocs sample the historical
+profile is `-MinimumNodes 14 -MinimumMessages 13 -MinimumAttachments 4`.
+Add `-NativeOnly` to assert the no-`go-pst` production path; the smoke fails if
+an `Indexed` output tree is created.
 
 ### Test corpus and fixture provenance
 

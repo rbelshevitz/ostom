@@ -181,3 +181,34 @@ func TestGenerateEMLCorpusTruncatedAttachmentIsDetected(t *testing.T) {
 		t.Fatal("truncated attachment was accepted without an observable MIME error")
 	}
 }
+
+func TestGenerateEMLCorpusRemainsAttachmentHeavyAtLongRunCount(t *testing.T) {
+	dir := t.TempDir()
+	const count = 256
+	if err := generateEMLCorpus(dir, count); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report emlManifest
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	attachments, large := 0, 0
+	for _, file := range report.Files {
+		if len(file.Attachments) == 0 {
+			t.Fatalf("message %s lost its attachment profile", file.Name)
+		}
+		attachments += len(file.Attachments)
+		for _, part := range file.Attachments {
+			if part.Bytes > 64<<10 {
+				large++
+			}
+		}
+	}
+	if len(report.Files) != count || attachments != 358 || large != 51 {
+		t.Fatalf("unexpected long-run attachment profile: files=%d attachments=%d large=%d", len(report.Files), attachments, large)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,6 +24,17 @@ func TestNativeExportTimeoutScalesAndCaps(t *testing.T) {
 	}
 }
 
+func TestBoundedOutputKeepsOnlyWorkerErrorTail(t *testing.T) {
+	var output boundedOutput
+	input := bytes.Repeat([]byte{'x'}, workerStderrLimit+17)
+	if written, err := output.Write(input); err != nil || written != len(input) {
+		t.Fatalf("write bounded output: written=%d err=%v", written, err)
+	}
+	if len(output.data) != workerStderrLimit || output.data[len(output.data)-1] != 'x' {
+		t.Fatalf("bounded output size=%d", len(output.data))
+	}
+}
+
 func TestIndexedExportTimeoutScalesAndCaps(t *testing.T) {
 	if got, want := indexedExportTimeout(0), 10*time.Minute; got != want {
 		t.Fatalf("zero-size indexed timeout = %s, want %s", got, want)
@@ -35,6 +47,15 @@ func TestIndexedExportTimeoutScalesAndCaps(t *testing.T) {
 	}
 	if indexedIdleTimeout <= 0 {
 		t.Fatal("indexed idle timeout must be positive")
+	}
+}
+
+func TestIndexedExportDirectoryIsolatedFromNativeRecovery(t *testing.T) {
+	if got, want := indexedExportDirectory("export", true), filepath.Join("export", "Indexed"); got != want {
+		t.Fatalf("recovery indexed directory = %q, want %q", got, want)
+	}
+	if got, want := indexedExportDirectory("export", false), "export"; got != want {
+		t.Fatalf("ordinary indexed directory = %q, want %q", got, want)
 	}
 }
 
@@ -81,5 +102,14 @@ func TestSummarizeFindingsSeparatesPartialResults(t *testing.T) {
 	findings := summarizeFindings(r)
 	if findings.Structure != "degraded" || findings.Messages != "partial" || findings.Attachments != "partial" {
 		t.Fatalf("unexpected findings: %+v", findings)
+	}
+}
+
+func TestFirstNonEmptyKeepsStableSourceFallback(t *testing.T) {
+	if got := firstNonEmpty("", "source.ost"); got != "source.ost" {
+		t.Fatalf("fallback source = %q", got)
+	}
+	if got := firstNonEmpty("session-source", "source.ost"); got != "session-source" {
+		t.Fatalf("record source = %q", got)
 	}
 }

@@ -16,9 +16,8 @@ OSTOM means **OST Mail Recovery**. The name describes the practical goal, not a 
 
 OSTOM targets data files produced by **classic Outlook for Windows**, including
 files associated with Outlook 2016, Outlook 2019, Outlook 2021, Outlook 2024,
-and Outlook for Microsoft 365. This is a compatibility target, not a promise
-that every release, account type, file variant, or damaged file will be fully
-readable.
+and Outlook for Microsoft 365. This is a compatibility target; the report
+shows how much data was readable from each particular file.
 
 Microsoft, Outlook, Windows, Microsoft 365, and related names are trademarks of
 the Microsoft group of companies. OSTOM is an independent project and is not
@@ -48,7 +47,7 @@ or build the source code. Download the latest [Windows amd64 release](https://gi
    .\ostom.exe --export-dir E:\recovered source-copy.ost
    ```
 
-3. If you also want to run the optional extended recovery pass, use:
+3. If the first export needs a broader pass, you can also run:
 
    ```powershell
    .\ostom.exe --recovery-scan --export-dir E:\recovered source-copy.ost
@@ -84,10 +83,8 @@ results are kept separate because their metadata or original folder path may
 be incomplete, and some may duplicate indexed items.
 
 Indexed mail and readable attachments are exported in the usual folder
-hierarchy. A public 4 KiB OST smoke test now yields 13 bounded native message
-candidates; complete attachment export remains unproven. Extended recovery can
-find additional candidates, but complex attachment layouts are still being
-explored.
+hierarchy. A broader pass can help with unusual layouts and keeps its
+additional results separate.
 
 ### Attachment handling
 
@@ -99,7 +96,7 @@ attachments are associated only when the file provides explicit evidence.
 ## CLI syntax
 
 ```text
-ostom [--json] [--check] [--progress-json] [--eml] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost
+ostom [--json] [--check] [--progress-json] [--eml] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--native-only] [--quiet] file.ost
 ```
 
 ## Build and run
@@ -160,6 +157,9 @@ The main options are:
 - `--recovery-scan` — force the additional, slower native recovery pass.
   Requires `--export-dir`; otherwise the pass is selected automatically only
   when the file assessment recommends it.
+- `--native-only` — run native recovery and skip the optional indexed `go-pst`
+  pass entirely. Requires `--export-dir`; native output is written to
+  `Local Folders` as a focused recovery result.
 - `--quiet` — suppress progress messages on stderr; warnings and the final
   report are still printed.
 
@@ -247,7 +247,10 @@ To export indexed readable messages directly into a Thunderbird-compatible `Loca
 ostom --export-dir E:\recovered file.ost
 ```
 
-Attachments are associated through the message attachment table and copied through `go-pst`'s streaming attachment writer. Inline attachments retain `Content-ID` when available. The exporter writes no `.msf` files.
+Attachments are associated through the message attachment table and copied as
+they are read, without assembling the whole message in memory. Inline
+attachments retain `Content-ID` when available. The exporter writes no `.msf`
+files.
 
 With `--eml`, the export also creates `OSTOM EML`, a safe per-message tree for
 readable indexed messages. EML files are streamed alongside mbox output and
@@ -264,17 +267,17 @@ The export report includes complete aggregate counts for attempted, exported,
 partial, and skipped messages, plus attachment failures. JSON also contains a
 bounded sample of per-message statuses with the source folder and subject;
 large stores report how many status records were omitted instead of retaining
-an unbounded in-memory list.
+an unbounded in-memory list. When both routes identify the same Message-ID, the
+manifest keeps both evidence records and reports `unique_messages` separately.
 
 ### Reports, progress, and limits
 
 It reports file/header recognition, parser/index access, folder and message counts, unread count, attachment count, declared attachment bytes, and errors encountered while walking the physical tree.
 
-During export, the CLI reports indexed message counts and native recovery phases
-to stderr. `--quiet` suppresses this progress output. Recovery uses explicit
-node, block, byte, record, and message limits. Native and indexed passes run in
-separate worker processes with watchdog timeouts; large files receive more
-native wall time, with an upper bound.
+During export, the CLI reports message counts and recovery phases to stderr.
+`--quiet` suppresses this progress output. Processing is bounded so a large or
+unusual file can finish with a clear partial result while the readable part of
+the export is preserved.
 
 The CLI reports file, folder, message, and attachment counts and errors. See
 [FORMAT](FORMAT.md) for how structural findings are interpreted.

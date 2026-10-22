@@ -23,6 +23,26 @@ import (
 
 var jsonProgress bool
 
+const workerStderrLimit = 64 << 10
+
+type boundedOutput struct {
+	data []byte
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	if len(p) >= workerStderrLimit {
+		b.data = append(b.data[:0], p[len(p)-workerStderrLimit:]...)
+		return len(p), nil
+	}
+	b.data = append(b.data, p...)
+	if len(b.data) > workerStderrLimit {
+		b.data = b.data[len(b.data)-workerStderrLimit:]
+	}
+	return len(p), nil
+}
+
+func (b *boundedOutput) String() string { return string(b.data) }
+
 type report struct {
 	Source        string                     `json:"source"`
 	SourceBytes   int64                      `json:"source_bytes"`
@@ -85,6 +105,7 @@ func main() {
 	exportDir := flag.String("export-dir", "", "directory for Thunderbird Local Folders export")
 	outputDir := flag.String("output-dir", "", "directory for ostom-report.json")
 	recoveryScan := flag.Bool("recovery-scan", false, "force bounded native recovery")
+	nativeOnly := flag.Bool("native-only", false, "run native recovery and skip optional indexed go-pst export")
 	checkOnly := flag.Bool("check", false, "inspect structure without exporting messages or attachments")
 	analyzeOnly := flag.Bool("analyze", false, "bounded read-only content analysis without export")
 	quiet := flag.Bool("quiet", false, "suppress progress on stderr")
@@ -100,19 +121,19 @@ func main() {
 	flag.Parse()
 	jsonProgress = *progressJSON
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: ostom [--json] [--check|--analyze] [--progress-json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--quiet] file.ost")
+		fmt.Fprintln(os.Stderr, "Usage: ostom [--json] [--check|--analyze] [--progress-json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--native-only] [--quiet] file.ost")
 		os.Exit(exitUsage)
 	}
-	if *recoveryScan && *exportDir == "" {
-		fmt.Fprintln(os.Stderr, "--recovery-scan requires --export-dir")
+	if (*recoveryScan || *nativeOnly) && *exportDir == "" {
+		fmt.Fprintln(os.Stderr, "--recovery-scan and --native-only require --export-dir")
 		os.Exit(exitUsage)
 	}
-	if *checkOnly && *recoveryScan {
-		fmt.Fprintln(os.Stderr, "--check cannot be combined with --recovery-scan")
+	if *checkOnly && (*recoveryScan || *nativeOnly) {
+		fmt.Fprintln(os.Stderr, "--check cannot be combined with --recovery-scan or --native-only")
 		os.Exit(exitUsage)
 	}
-	if *analyzeOnly && (*checkOnly || *recoveryScan || *exportDir != "") {
-		fmt.Fprintln(os.Stderr, "--analyze cannot be combined with --check, --recovery-scan, or --export-dir")
+	if *analyzeOnly && (*checkOnly || *recoveryScan || *nativeOnly || *exportDir != "") {
+		fmt.Fprintln(os.Stderr, "--analyze cannot be combined with --check, --recovery-scan, --native-only, or --export-dir")
 		os.Exit(exitUsage)
 	}
 	if *indexedWorker {
@@ -135,14 +156,16 @@ func main() {
 		fatalf("open source: %v", err)
 	}
 	var runSession *session.Store
+	journalPath := ""
 	if *exportDir != "" {
-		runSession, err = session.Open(*exportDir, source, session.Options{RecoveryScan: *recoveryScan, FullEML: *fullEML})
+		runSession, err = session.Open(*exportDir, source, session.Options{RecoveryScan: *recoveryScan || *nativeOnly, FullEML: *fullEML})
 		if err != nil {
 			fatalf("open recovery session: %v", err)
 		}
 		if err := runSession.Update("inspecting", ""); err != nil {
 			fatalf("update recovery session: %v", err)
 		}
+		journalPath = runSession.JournalPath()
 	}
 	h := format.ReadHeader(source)
 	if h.OK {
@@ -150,7 +173,7 @@ func main() {
 	}
 	roots := format.ScanIndexRoots(source, h, info.Size())
 	assessment := format.AssessFile(h, roots, info.Size())
-	r := report{Source: source, SourceBytes: info.Size(), Header: h, IndexRoots: roots, Assessment: assessment, RecoveryScan: *recoveryScan, CheckOnly: *checkOnly, RecoveryRun: "not_run", Status: "completed"}
+	r := report{Source: source, SourceBytes: info.Size(), Header: h, IndexRoots: roots, Assessment: assessment, RecoveryScan: *recoveryScan || *nativeOnly, CheckOnly: *checkOnly, RecoveryRun: "not_run", Status: "completed"}
 	if destination := existingDestination(*exportDir, *outputDir); destination != "" {
 		if space, spaceErr := storage.Query(destination); spaceErr == nil {
 			required := uint64(info.Size()) + uint64(info.Size())/5
@@ -186,7 +209,7 @@ func main() {
 				printProgress("standard mailbox export", done, total)
 			}
 		}
-		runRecovery := *recoveryScan || assessment.DeepRecovery != "not_needed"
+		runRecovery := *recoveryScan || *nativeOnly || assessment.DeepRecovery != "not_needed"
 		if runRecovery {
 			if *recoveryScan {
 				r.RecoveryRun = "explicit"
@@ -204,49 +227,51 @@ func main() {
 			if manifestDir == "" {
 				manifestDir = *exportDir
 			}
-			if err := writeRecoveryManifest(manifestDir, source, r); err != nil {
+			if err := writeRecoveryManifest(manifestDir, source, r, nativeManifestPath(runSession), journalPath); err != nil {
 				r.Errors = append(r.Errors, "recovery manifest: "+err.Error())
 			}
 		}
-		// Deep recovery is native-only. go-pst remains an optional ordinary
-		// indexed backend; its recovery-mode heuristics are not safe to run on
-		// damaged 4 KiB OSTs and have no bounded cancellation path.
-		journalPath := ""
-		if runSession != nil {
-			journalPath = runSession.JournalPath()
-		}
-		indexed, exportErr := runIndexedExportWithTimeout(source, *exportDir, false, info.Size(), journalPath, progress, *quiet, *fullEML)
-		r.Indexed = &indexed
-		if exportErr != nil {
-			r.IndexedStatus = "timeout_or_failed"
-			if strings.Contains(exportErr.Error(), "exceeded") {
-				r.IndexedStatus = "timeout"
-			}
-			r.Warnings = append(r.Warnings, "indexed export: "+exportErr.Error())
-			// A slow indexed traversal must not leave the user with no export.
-			// Switch to the bounded native path automatically after the watchdog
-			// fires; its output is kept in a separate recovery mailbox tree.
-			if r.IndexedStatus == "timeout" && r.Native == nil {
-				nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession))
-				r.Native = &nativeReport
-				if nativeErr != nil {
-					r.Errors = append(r.Errors, "recovery fallback: "+nativeErr.Error())
+		if !*nativeOnly {
+			// Deep recovery is native-only. go-pst remains an optional ordinary
+			// indexed backend; its recovery-mode heuristics are not safe to run on
+			// damaged 4 KiB OSTs and have no bounded cancellation path.
+			// When native recovery already ran, keep the optional go-pst output in a
+			// separate mailbox tree. Both exporters append to "Local Folders"; sharing
+			// that root would turn a successful native result into duplicate messages.
+			indexedDir := indexedExportDirectory(*exportDir, runRecovery)
+			indexed, exportErr := runIndexedExportWithTimeout(source, indexedDir, false, info.Size(), journalPath, progress, *quiet, *fullEML)
+			r.Indexed = &indexed
+			if exportErr != nil {
+				r.IndexedStatus = "timeout_or_failed"
+				if strings.Contains(exportErr.Error(), "exceeded") {
+					r.IndexedStatus = "timeout"
 				}
+				r.Warnings = append(r.Warnings, "indexed export: "+exportErr.Error())
+				// A slow indexed traversal must not leave the user with no export.
+				// Switch to the bounded native path automatically after the watchdog
+				// fires; its output is kept in a separate recovery mailbox tree.
+				if r.IndexedStatus == "timeout" && r.Native == nil {
+					nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession))
+					r.Native = &nativeReport
+					if nativeErr != nil {
+						r.Errors = append(r.Errors, "recovery fallback: "+nativeErr.Error())
+					}
+				}
+			} else {
+				r.IndexedStatus = "completed"
 			}
-		} else {
-			r.IndexedStatus = "completed"
 		}
 	} else if *checkOnly {
 		r.Warnings = append(r.Warnings, "check-only mode: export was not requested")
 	} else {
 		r.Warnings = append(r.Warnings, "no export directory supplied; inspection only")
 	}
-	if *recoveryScan {
+	if r.Native != nil || r.Indexed != nil {
 		manifestDir := *outputDir
 		if manifestDir == "" {
 			manifestDir = *exportDir
 		}
-		if err := writeRecoveryManifest(manifestDir, source, r); err != nil {
+		if err := writeRecoveryManifest(manifestDir, source, r, nativeManifestPath(runSession), journalPath); err != nil {
 			r.Errors = append(r.Errors, "recovery manifest: "+err.Error())
 		}
 	}
@@ -368,13 +393,27 @@ func existingDestination(exportDir, outputDir string) string {
 	}
 }
 
-func writeRecoveryManifest(outputDir, source string, r report) error {
+func writeRecoveryManifest(outputDir, source string, r report, nativeManifestPath, journalPath string) error {
 	records := make([]manifest.Record, 0)
-	if r.Indexed != nil {
+	if journalPath != "" {
+		latest, err := session.Latest(journalPath)
+		if err != nil {
+			return err
+		}
+		for _, entry := range latest {
+			records = append(records, manifest.Record{
+				Kind: entry.Kind, Source: firstNonEmpty(entry.Source, source), Identity: entry.Identity, Route: entry.Route,
+				FolderPath: entry.Folder, MessageID: entry.MessageID, Status: entry.Status, DeclaredBytes: entry.DeclaredBytes,
+				ReadableBytes: entry.ReadableBytes, ExportedBytes: entry.ExportedBytes,
+				SHA256: entry.SHA256, OutputPath: entry.OutputPath, Errors: nonEmptyErrors(entry.Error),
+			})
+		}
+	}
+	if len(records) == 0 && r.Indexed != nil {
 		for _, status := range r.Indexed.MessageStatus {
 			records = append(records, manifest.Record{
 				Kind: "message", Source: "indexed", Identity: fmt.Sprintf("indexed-message-%08d", status.Index),
-				Route: "indexed", FolderPath: status.Folder, Status: status.Outcome,
+				Route: "indexed", FolderPath: status.Folder, MessageID: status.MessageID, Status: status.Outcome,
 				Errors: nonEmptyErrors(status.Error),
 			})
 		}
@@ -386,9 +425,24 @@ func writeRecoveryManifest(outputDir, source string, r report) error {
 		}
 	}
 	if r.Native != nil {
-		records = append(records, r.Native.Export.ManifestRecords...)
+		if nativeManifestPath != "" {
+			nativeRecords, err := native.ReadManifest(nativeManifestPath)
+			if err != nil {
+				return fmt.Errorf("read native manifest: %w", err)
+			}
+			records = append(records, nativeRecords...)
+		} else {
+			records = append(records, r.Native.Export.ManifestRecords...)
+		}
 	}
-	return manifest.Write(outputDir, source, records)
+	return manifest.WriteOwned(outputDir, source, records)
+}
+
+func nativeManifestPath(store *session.Store) string {
+	if store == nil {
+		return ""
+	}
+	return filepath.Join(store.WorkDir("native"), "native-manifest.jsonl")
 }
 
 func nonEmptyErrors(value string) []string {
@@ -396,6 +450,15 @@ func nonEmptyErrors(value string) []string {
 		return nil
 	}
 	return []string{value}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 const indexedIdleTimeout = 5 * time.Minute
@@ -457,7 +520,8 @@ func runNativeExportWithTimeout(source, output string, fileSize int64, quiet, fu
 	}
 	args = append(args, source)
 	cmd := exec.Command(executable, args...)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	var stderr boundedOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	if err := cmd.Start(); err != nil {
@@ -499,7 +563,8 @@ func runNativeAnalysisWithTimeout(source string, fileSize int64, quiet bool) (An
 	}
 	args = append(args, source)
 	cmd := exec.Command(executable, args...)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	var stderr boundedOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	if err := cmd.Start(); err != nil {
@@ -523,6 +588,13 @@ func runNativeAnalysisWithTimeout(source string, fileSize int64, quiet bool) (An
 		<-done
 		return result, fmt.Errorf("native analysis exceeded %s", nativeExportTimeout(fileSize))
 	}
+}
+
+func indexedExportDirectory(exportDir string, nativeRecovery bool) string {
+	if nativeRecovery {
+		return filepath.Join(exportDir, "Indexed")
+	}
+	return exportDir
 }
 
 func runIndexedExportWithTimeout(source, output string, recovery bool, fileSize int64, journalFile string, progress func(done, total int), quiet, fullEML bool) (gopst.Report, error) {
@@ -557,7 +629,8 @@ func runIndexedExportWithTimeout(source, output string, recovery bool, fileSize 
 	}
 	args = append(args, source)
 	cmd := exec.Command(executable, args...)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	var stderr boundedOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	if err := cmd.Start(); err != nil {
@@ -617,6 +690,7 @@ func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, hear
 		heartbeat = func() { _ = os.Chtimes(heartbeatFile, time.Now(), time.Now()) }
 	}
 	var item func(gopst.MessageStatus)
+	var skip func(string) bool
 	var journalErr error
 	if journalFile != "" {
 		journal, openErr := session.OpenJournal(journalFile)
@@ -625,20 +699,37 @@ func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, hear
 			os.Exit(1)
 		}
 		defer journal.Close()
+		if repairErr := session.RepairIndexedOutputs(journalFile); repairErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", repairErr)
+			os.Exit(1)
+		}
+		completed, completedErr := session.Completed(journalFile)
+		if completedErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", completedErr)
+			os.Exit(1)
+		}
+		// Only a durably exported item is resumable. Partial, failed, and
+		// in-progress states must be replayed after output repair.
+		skip = func(identity string) bool { return completed[identity] }
 		item = func(status gopst.MessageStatus) {
 			if journalErr != nil {
 				return
 			}
 			journalErr = journal.Append(session.ItemEntry{
-				Identity: status.Identity,
-				Kind:     "message",
-				Folder:   status.Folder,
-				Status:   status.Outcome,
-				Error:    status.Error,
+				Source:       source,
+				Identity:     status.Identity,
+				Kind:         "message",
+				Route:        "indexed",
+				Folder:       status.Folder,
+				MessageID:    status.MessageID,
+				OutputPath:   status.OutputPath,
+				OutputOffset: status.OutputOffset,
+				Status:       status.Outcome,
+				Error:        status.Error,
 			})
 		}
 	}
-	result, err := safeIndexedExport(source, output, recovery, heartbeat, progress, fullEML, item, nil)
+	result, err := safeIndexedExport(source, output, recovery, heartbeat, progress, fullEML, item, skip)
 	if err == nil && journalErr != nil {
 		err = journalErr
 	}
@@ -811,30 +902,37 @@ func safeNativeAnalyze(source string, h format.Header, fileSize int64, limits na
 			err = fmt.Errorf("native analysis panic: %v", recovered)
 		}
 	}()
-	scan, err := format.CollectIndexedRecoveredMessagesWithAttachmentLimit(
+	candidates := 0
+	scan, err := format.CollectIndexedRecoveredMessagesWithConsumerInDir(
 		source, h, fileSize, limits.MaxNodes, limits.MaxBlocks, limits.MaxBytes,
 		limits.MaxRecords, limits.MaxMessages, limits.MaxBodyBytes, limits.MaxAttachmentBytes,
 		limits.MaxErrorSamples, func(done, total int) {
 			if progress != nil {
 				progress("analyzing recoverable messages", done, total)
 			}
+		}, limits.WorkDir, func(message format.RecoveredMessage) error {
+			candidates++
+			if message.Incomplete {
+				result.IncompleteMessages++
+			}
+			result.Attachments += len(message.Attachments)
+			for _, attachment := range message.Attachments {
+				if attachment.Incomplete {
+					result.IncompleteAttachments++
+				}
+			}
+			return nil
 		},
 	)
 	if scan.Cleanup != nil {
 		defer func() { _ = scan.Cleanup() }()
 	}
-	result = AnalysisReport{Mode: scan.Mode, Status: scan.Status, Candidates: len(scan.Messages), Rejected: scan.Rejected, Errors: scan.Errors, LimitReached: scan.LimitReached}
-	for _, message := range scan.Messages {
-		if message.Incomplete {
-			result.IncompleteMessages++
-		}
-		result.Attachments += len(message.Attachments)
-		for _, attachment := range message.Attachments {
-			if attachment.Incomplete {
-				result.IncompleteAttachments++
-			}
-		}
-	}
+	result.Mode = scan.Mode
+	result.Status = scan.Status
+	result.Candidates = candidates
+	result.Rejected = scan.Rejected
+	result.Errors = scan.Errors
+	result.LimitReached = scan.LimitReached
 	return result, err
 }
 

@@ -89,6 +89,12 @@ func (w *Writer) RenderWithSource(subject, from, to, cc, messageID string, date 
 	return msg.Bytes(), nil
 }
 
+// WriteEMLWithSource writes one raw RFC 5322 message directly to dst. Unlike
+// RenderWithSource it does not materialize the MIME document in memory.
+func (w *Writer) WriteEMLWithSource(dst io.Writer, subject, from, to, cc, messageID string, date time.Time, body string, attachments []Attachment, source string) error {
+	return writeMessageTo(dst, w, subject, from, to, cc, messageID, date, body, attachments, source)
+}
+
 // writeMessageTo writes one RFC 5322 message without first building the whole
 // MIME document in memory. This matters for large attachments: the source
 // reader is copied through the MIME encoder into the destination in bounded
@@ -297,16 +303,23 @@ func newMboxLineWriter(w io.Writer) *mboxLineWriter {
 }
 
 func (w *mboxLineWriter) Write(p []byte) (int, error) {
-	for i, b := range p {
-		if w.atLineStart && b == 'F' && len(p)-i >= 5 && string(p[i:i+5]) == "From " {
-			if _, err := io.WriteString(w.w, ">"); err != nil {
-				return i, err
-			}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	// MIME encoders provide sizeable chunks. Build one escaped chunk and do a
+	// single underlying write instead of issuing one system call per byte.
+	out := make([]byte, 0, len(p)+len(p)/76)
+	for i := 0; i < len(p); {
+		if w.atLineStart && len(p)-i >= 5 && bytes.Equal(p[i:i+5], []byte("From ")) {
+			out = append(out, '>')
 		}
-		if _, err := w.w.Write([]byte{b}); err != nil {
-			return i, err
-		}
+		b := p[i]
+		out = append(out, b)
 		w.atLineStart = b == '\n'
+		i++
+	}
+	if _, err := w.w.Write(out); err != nil {
+		return 0, err
 	}
 	return len(p), nil
 }

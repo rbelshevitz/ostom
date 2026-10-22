@@ -1,6 +1,10 @@
 package native
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +12,38 @@ import (
 
 	"ostom/internal/format"
 )
+
+func TestExportStreamsLazyLargeAttachment(t *testing.T) {
+	root := t.TempDir()
+	payload := bytes.Repeat([]byte("lazy-attachment-payload-"), 32*1024)
+	sum := sha256.Sum256(payload)
+	report, err := ExportWithProgressMode(root, []format.RecoveredMessage{{
+		BID:     0x202,
+		Subject: "Lazy attachment",
+		Body:    []byte("body"),
+		Attachments: []format.RecoveredAttachment{{
+			Name: "large.bin", MimeType: "application/octet-stream", ReadableSize: int64(len(payload)),
+			Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(payload)), nil },
+		}},
+	}}, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.EMLWritten != 1 || len(report.ManifestRecords) != 2 {
+		t.Fatalf("unexpected lazy attachment report: %+v", report)
+	}
+	attachment := report.ManifestRecords[1]
+	if attachment.Kind != "attachment" || attachment.ReadableBytes != int64(len(payload)) || attachment.SHA256 != fmt.Sprintf("%x", sum[:]) || attachment.ExportedBytes != int64(len(payload)) {
+		t.Fatalf("lazy attachment was not streamed and accounted: %+v", attachment)
+	}
+	eml, err := os.ReadFile(filepath.Join(root, "OSTOM Native Recovered EML", "0000000000000202.eml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(eml, []byte("large.bin")) || len(eml) <= len(payload) {
+		t.Fatalf("lazy attachment missing from EML: bytes=%d", len(eml))
+	}
+}
 
 func TestExportRecoveredMessages(t *testing.T) {
 	root := t.TempDir()
@@ -72,5 +108,25 @@ func TestExportUsesRecoveredFolderPath(t *testing.T) {
 	path := filepath.Join(root, "OSTOM Native Recovered.sbd", "Inbox.sbd", "Archive")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("folder-preserving mbox missing: %v", err)
+	}
+}
+
+func TestDiscardUncommittedBatches(t *testing.T) {
+	workDir := t.TempDir()
+	batches := filepath.Join(workDir, "batches")
+	if err := os.MkdirAll(filepath.Join(batches, ".writing-crash", "output"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(batches, "000001"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := discardUncommittedBatches(workDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(batches, ".writing-crash")); !os.IsNotExist(err) {
+		t.Fatalf("incomplete batch still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(batches, "000001")); err != nil {
+		t.Fatalf("committed batch directory was removed: %v", err)
 	}
 }

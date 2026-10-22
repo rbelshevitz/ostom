@@ -22,6 +22,7 @@ type Record struct {
 	Route         string   `json:"route"`
 	StorePath     string   `json:"store_path,omitempty"`
 	FolderPath    string   `json:"folder_path,omitempty"`
+	MessageID     string   `json:"message_id,omitempty"`
 	NID           string   `json:"nid,omitempty"`
 	BID           string   `json:"bid,omitempty"`
 	Status        string   `json:"status"`
@@ -30,6 +31,7 @@ type Record struct {
 	ExportedBytes int64    `json:"exported_bytes,omitempty"`
 	SHA256        string   `json:"sha256,omitempty"`
 	OutputPath    string   `json:"output_path,omitempty"`
+	DuplicateOf   string   `json:"duplicate_of,omitempty"`
 	Errors        []string `json:"errors,omitempty"`
 }
 
@@ -44,12 +46,14 @@ type Document struct {
 // frontends from loading and classifying the complete record list just to
 // render the outcome of a large recovery run.
 type Summary struct {
-	Total       int                       `json:"total"`
-	Messages    int                       `json:"messages"`
-	Attachments int                       `json:"attachments"`
-	ByStatus    map[string]int            `json:"by_status,omitempty"`
-	ByKind      map[string]map[string]int `json:"by_kind,omitempty"`
-	Orphans     int                       `json:"orphans,omitempty"`
+	Total               int                       `json:"total"`
+	Messages            int                       `json:"messages"`
+	UniqueMessages      int                       `json:"unique_messages"`
+	Attachments         int                       `json:"attachments"`
+	ByStatus            map[string]int            `json:"by_status,omitempty"`
+	ByKind              map[string]map[string]int `json:"by_kind,omitempty"`
+	Orphans             int                       `json:"orphans,omitempty"`
+	DuplicateCandidates int                       `json:"duplicate_candidates,omitempty"`
 }
 
 // Write creates matching deterministic JSON and CSV recovery manifests.
@@ -63,11 +67,27 @@ func Write(outputDir, source string, records []Record) error {
 	records = append([]Record(nil), records...)
 	for i := range records {
 		records[i].Errors = append([]string(nil), records[i].Errors...)
+	}
+	return writeOwned(outputDir, source, records)
+}
+
+// WriteOwned is for callers that will not use records again. It avoids a
+// second full manifest-sized allocation during final recovery reporting.
+func WriteOwned(outputDir, source string, records []Record) error {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return err
+	}
+	return writeOwned(outputDir, source, records)
+}
+
+func writeOwned(outputDir, source string, records []Record) error {
+	for i := range records {
 		sort.Strings(records[i].Errors)
 	}
 	sort.SliceStable(records, func(i, j int) bool {
 		return recordKey(records[i]) < recordKey(records[j])
 	})
+	markDuplicateCandidates(records)
 	if err := writeJSON(filepath.Join(outputDir, "recovery-manifest.json"), Document{Version: 1, Source: source, Summary: summarize(records), Records: records}); err != nil {
 		return err
 	}
@@ -80,6 +100,9 @@ func summarize(records []Record) Summary {
 		switch record.Kind {
 		case "message":
 			summary.Messages++
+			if record.DuplicateOf == "" {
+				summary.UniqueMessages++
+			}
 		case "attachment":
 			summary.Attachments++
 		}
@@ -95,8 +118,32 @@ func summarize(records []Record) Summary {
 		if record.Kind == "message" && record.FolderPath == "" {
 			summary.Orphans++
 		}
+		if record.DuplicateOf != "" {
+			summary.DuplicateCandidates++
+		}
 	}
 	return summary
+}
+
+// markDuplicateCandidates records deterministic, non-destructive matches. A
+// Message-ID is the only cross-route identity strong enough to surface here;
+// subject, size, and folder are deliberately excluded because they collide in
+// real mailboxes. The first sorted record remains the reference record.
+func markDuplicateCandidates(records []Record) {
+	first := make(map[string]string)
+	for i := range records {
+		record := &records[i]
+		if record.Kind != "message" || strings.TrimSpace(record.MessageID) == "" {
+			continue
+		}
+		key := strings.TrimSpace(record.MessageID)
+		identity := strings.Join([]string{record.Source, record.Route, record.Identity}, ":")
+		if reference, ok := first[key]; ok {
+			record.DuplicateOf = reference
+			continue
+		}
+		first[key] = identity
+	}
 }
 
 func recordKey(record Record) string {
@@ -119,12 +166,12 @@ func writeCSV(path string, records []Record) error {
 	temporary := file.Name()
 	defer os.Remove(temporary)
 	w := csv.NewWriter(file)
-	if err := w.Write([]string{"kind", "source", "identity", "route", "store_path", "folder_path", "nid", "bid", "status", "declared_bytes", "readable_bytes", "exported_bytes", "sha256", "output_path", "errors"}); err != nil {
+	if err := w.Write([]string{"kind", "source", "identity", "route", "store_path", "folder_path", "message_id", "nid", "bid", "status", "declared_bytes", "readable_bytes", "exported_bytes", "sha256", "output_path", "duplicate_of", "errors"}); err != nil {
 		file.Close()
 		return err
 	}
 	for _, record := range records {
-		if err := w.Write([]string{record.Kind, record.Source, record.Identity, record.Route, record.StorePath, record.FolderPath, record.NID, record.BID, record.Status, strconv.FormatInt(record.DeclaredBytes, 10), strconv.FormatInt(record.ReadableBytes, 10), strconv.FormatInt(record.ExportedBytes, 10), record.SHA256, record.OutputPath, strings.Join(record.Errors, "; ")}); err != nil {
+		if err := w.Write([]string{record.Kind, record.Source, record.Identity, record.Route, record.StorePath, record.FolderPath, record.MessageID, record.NID, record.BID, record.Status, strconv.FormatInt(record.DeclaredBytes, 10), strconv.FormatInt(record.ReadableBytes, 10), strconv.FormatInt(record.ExportedBytes, 10), record.SHA256, record.OutputPath, record.DuplicateOf, strings.Join(record.Errors, "; ")}); err != nil {
 			file.Close()
 			return err
 		}

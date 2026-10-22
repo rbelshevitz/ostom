@@ -42,16 +42,19 @@ type State struct {
 // Batch is the durable record for one internal portion of work. A portion is
 // reusable only after it is marked committed and its artifact passes checks.
 type Batch struct {
-	Number        int      `json:"number"`
-	Status        string   `json:"status"` // writing, committed, failed
-	Artifact      string   `json:"artifact"`
-	FirstIdentity string   `json:"first_identity,omitempty"`
-	LastIdentity  string   `json:"last_identity,omitempty"`
-	Identities    []string `json:"identities,omitempty"`
-	Items         int      `json:"items"`
-	Bytes         int64    `json:"bytes"`
-	SHA256        string   `json:"sha256,omitempty"`
-	UpdatedUTC    string   `json:"updated_utc"`
+	Number         int      `json:"number"`
+	Status         string   `json:"status"` // writing, committed, failed
+	Artifact       string   `json:"artifact"`
+	FirstIdentity  string   `json:"first_identity,omitempty"`
+	LastIdentity   string   `json:"last_identity,omitempty"`
+	Identities     []string `json:"identities,omitempty"`
+	Items          int      `json:"items"`
+	Bytes          int64    `json:"bytes"`
+	SHA256         string   `json:"sha256,omitempty"`
+	Manifest       string   `json:"manifest,omitempty"`
+	ManifestBytes  int64    `json:"manifest_bytes,omitempty"`
+	ManifestSHA256 string   `json:"manifest_sha256,omitempty"`
+	UpdatedUTC     string   `json:"updated_utc"`
 }
 
 type Store struct {
