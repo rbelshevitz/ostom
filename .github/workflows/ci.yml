@@ -100,6 +100,9 @@ jobs:
           dotnet publish .\gui\Ostom.Gui\Ostom.Gui.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $staging
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
           Compress-Archive -Path "$staging\ostom.exe", "$staging\ostom-gui.exe" -DestinationPath "$env:RUNNER_TEMP\$archive" -Force
+          $checksum = Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt"
+          $hash = (Get-FileHash "$env:RUNNER_TEMP\$archive" -Algorithm SHA256).Hash
+          Set-Content -Path $checksum -Value "$hash  $archive"
 
       - name: Create GitHub Release
         shell: pwsh
@@ -118,10 +121,11 @@ jobs:
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Set-Content -Path $notesPath -Value $notes
           $asset = "$env:RUNNER_TEMP\ostom-$env:GITHUB_REF_NAME-windows-amd64.zip"
+          $checksums = "$env:RUNNER_TEMP\SHA256SUMS.txt"
           gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release edit "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --notes-file "$notesPath"
-            gh release upload "$env:GITHUB_REF_NAME" "$asset" --repo "$env:GITHUB_REPOSITORY" --clobber
+            gh release upload "$env:GITHUB_REF_NAME" "$asset" "$checksums" --repo "$env:GITHUB_REPOSITORY" --clobber
           } else {
-            gh release create "$env:GITHUB_REF_NAME" "$asset" --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --notes-file "$notesPath"
+            gh release create "$env:GITHUB_REF_NAME" "$asset" "$checksums" --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --notes-file "$notesPath"
           }
