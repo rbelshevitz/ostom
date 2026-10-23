@@ -4,14 +4,14 @@
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-Read-only extraction of readable mail from Outlook OST/PST files.
+OSTOM is a read-only utility for recovering readable mail from Outlook OST/PST files.
 
-OSTOM is a read-only mail extraction and export tool for Outlook data files.
-It is useful when an OST/PST is partly readable: it copies what can be read
-into a Thunderbird-compatible mbox tree, keeps damaged parts visible, and
-never changes the source file.
+OSTOM reads Outlook data files without changing them. When an OST/PST is only
+partly readable, it copies the mail and attachments it can recover into a
+Thunderbird-compatible mbox tree, reports damaged parts, and leaves the source
+file untouched.
 
-Its practical value is a safe, local salvage pass with an honest report:
+In short, OSTOM is a local salvage tool with an honest report:
 
 - the normal indexed export preserves readable folders and messages;
 - a separate bounded recovery path can find additional messages when the index
@@ -38,7 +38,7 @@ Export readable mail (the report is saved in the export directory too):
 ```
 
 If the file is damaged or the ordinary path is insufficient, force the
-bounded native recovery pass:
+separate recovery pass:
 
 ```powershell
  .\ostom.exe -recovery-scan -export-dir E:\recovered source-copy.ost
