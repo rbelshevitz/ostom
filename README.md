@@ -28,20 +28,20 @@ Use a copy of the source file and keep the original unchanged.
 Inspect the structure and save a JSON report:
 
 ```powershell
-.\ostom.exe --json --output-dir E:\recovered source-copy.ost
+ .\ostom.exe -json -output-dir E:\recovered source-copy.ost
 ```
 
-Export readable mail:
+Export readable mail (the report is saved in the export directory too):
 
 ```powershell
-.\ostom.exe --export-dir E:\recovered source-copy.ost
+ .\ostom.exe -export-dir E:\recovered source-copy.ost
 ```
 
 If the file is damaged or the ordinary path is insufficient, force the
-separate recovery pass:
+bounded native recovery pass:
 
 ```powershell
-.\ostom.exe --recovery-scan --export-dir E:\recovered source-copy.ost
+ .\ostom.exe -recovery-scan -export-dir E:\recovered source-copy.ost
 ```
 
 Close Thunderbird, copy the resulting `Local Folders` directory into its
@@ -51,26 +51,34 @@ them.
 ## Options
 
 ```text
-ostom [--json] [--check|--analyze] [--progress-json] [--eml]
-      [--output-dir DIR] [--export-dir DIR]
-      [--recovery-scan] [--native-only] [--quiet] file.ost
+ostom [-json] [-check|-analyze] [-progress-json] [-eml]
+      [-output-dir DIR] [-export-dir DIR]
+      [-recovery-scan] [-native-only] [-quiet] file.ost
 ```
 
-- `--check` — fast structure check without reading message content.
-- `--analyze` — bounded content analysis without export.
-- `--export-dir DIR` — write the Thunderbird-compatible export.
-- `--output-dir DIR` — write `ostom-report.json` there.
-- `--recovery-scan` — force the separate bounded recovery path.
-- `--native-only` — skip the optional indexed `go-pst` path.
-- `--eml` — additionally write one `.eml` per recovered message on the selected
-  export paths.
-- `--json` — write the final report as JSON.
-- `--progress-json` — write machine-readable progress events to stderr.
-- `--quiet` — suppress progress text.
+- `-check` — fast structure check without reading message content.
+- `-analyze` — bounded content analysis without export.
+- `-export-dir DIR` — destination for recovered mail. The normal export is
+  written below `Local Folders`.
+- `-output-dir DIR` — separate destination for `ostom-report.json` and, when
+  recovery runs, `recovery-manifest.json`/`.csv`. If omitted, these files are
+  written to `-export-dir`.
+- `-recovery-scan` — force the separate bounded recovery path.
+- `-native-only` — skip the optional indexed `go-pst` path.
+- `-eml` — additionally write one `.eml` per recovered message on every
+  selected export path, including native recovery.
+- `-json` — write the final report as JSON.
+- `-progress-json` — write machine-readable progress events to stderr.
+- `-quiet` — suppress progress text.
 
-`--recovery-scan` and `--native-only` require `--export-dir`. The indexed
+`-recovery-scan` and `-native-only` require `-export-dir`. The indexed
 `go-pst` path is optional; its timeout or error is reported and does not change
 the read-only bounded recovery path.
+
+When native recovery and indexed export both run, their outputs are kept apart:
+native recovery uses `Local Folders`, while the indexed export uses `Indexed`.
+This prevents duplicate messages from being silently merged into one mailbox
+tree.
 
 ## What to expect
 

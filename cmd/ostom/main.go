@@ -123,7 +123,7 @@ func main() {
 	analyzeOnly := flag.Bool("analyze", false, "bounded read-only content analysis without export")
 	quiet := flag.Bool("quiet", false, "suppress progress on stderr")
 	progressJSON := flag.Bool("progress-json", false, "write progress events as JSON lines to stderr")
-	fullEML := flag.Bool("eml", false, "also write one EML file for every indexed message")
+	fullEML := flag.Bool("eml", false, "also write one EML file for every recovered message")
 	indexedWorker := flag.Bool("indexed-worker", false, "internal indexed export worker")
 	indexedCountWorker := flag.Bool("indexed-count-worker", false, "internal indexed message-count worker")
 	indexedRecovery := flag.Bool("indexed-recovery", false, "internal indexed worker recovery mode")
@@ -136,19 +136,19 @@ func main() {
 	flag.Parse()
 	jsonProgress = *progressJSON
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: ostom [--json] [--check|--analyze] [--progress-json] [--output-dir DIR] [--export-dir DIR] [--recovery-scan] [--native-only] [--quiet] file.ost")
+		fmt.Fprintln(os.Stderr, "Usage: ostom [-json] [-check|-analyze] [-progress-json] [-output-dir DIR] [-export-dir DIR] [-recovery-scan] [-native-only] [-quiet] file.ost")
 		os.Exit(exitUsage)
 	}
 	if (*recoveryScan || *nativeOnly) && *exportDir == "" {
-		fmt.Fprintln(os.Stderr, "--recovery-scan and --native-only require --export-dir")
+		fmt.Fprintln(os.Stderr, "-recovery-scan and -native-only require -export-dir")
 		os.Exit(exitUsage)
 	}
 	if *checkOnly && (*recoveryScan || *nativeOnly) {
-		fmt.Fprintln(os.Stderr, "--check cannot be combined with --recovery-scan or --native-only")
+		fmt.Fprintln(os.Stderr, "-check cannot be combined with -recovery-scan or -native-only")
 		os.Exit(exitUsage)
 	}
 	if *analyzeOnly && (*checkOnly || *recoveryScan || *nativeOnly || *exportDir != "") {
-		fmt.Fprintln(os.Stderr, "--analyze cannot be combined with --check, --recovery-scan, --native-only, or --export-dir")
+		fmt.Fprintln(os.Stderr, "-analyze cannot be combined with -check, -recovery-scan, -native-only, or -export-dir")
 		os.Exit(exitUsage)
 	}
 	if *indexedWorker {
