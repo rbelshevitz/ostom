@@ -5,6 +5,7 @@ gui/Ostom.Gui/obj/
 .gopath/
 /ostom.exe
 /ostom-fixture.exe
+/dist/
 /testdata/export-*/
 /testdata/fixtures/
 /testdata/generated/
