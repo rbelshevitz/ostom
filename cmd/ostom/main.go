@@ -655,7 +655,12 @@ func runIndexedExportWithTimeout(source, output string, recovery bool, fileSize 
 		if !quiet {
 			printProgress("preparing export", 0, 0)
 		}
+		beforeCount, _ := os.Stat(source)
 		expectedMessages, _ = runIndexedCountWithTimeout(executable, source)
+		afterCount, _ := os.Stat(source)
+		if !sameSourceSnapshot(beforeCount, afterCount) {
+			expectedMessages = 0
+		}
 	}
 	args := []string{"-indexed-worker", "-export-dir", output}
 	if expectedMessages > 0 {
@@ -737,6 +742,13 @@ finished:
 	return result, nil
 }
 
+func sameSourceSnapshot(before, after os.FileInfo) bool {
+	if before == nil || after == nil {
+		return false
+	}
+	return before.Size() == after.Size() && before.ModTime().Equal(after.ModTime())
+}
+
 const indexedEstimateTimeout = 30 * time.Second
 
 type indexedEstimateReport struct {
@@ -745,11 +757,19 @@ type indexedEstimateReport struct {
 }
 
 func runIndexedCountWithTimeout(executable, source string) (int, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), indexedEstimateTimeout)
-	defer cancel()
+	return runIndexedCountWithTimeoutDuration(executable, source, indexedEstimateTimeout)
+}
+
+var indexedCountCommand = func(ctx context.Context, executable, source string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, executable, "-indexed-count-worker", source)
 	cmd.WaitDelay = 2 * time.Second
-	data, err := cmd.Output()
+	return cmd.Output()
+}
+
+func runIndexedCountWithTimeoutDuration(executable, source string, timeout time.Duration) (int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	data, err := indexedCountCommand(ctx, executable, source)
 	if err != nil || ctx.Err() != nil {
 		return 0, false
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -218,6 +219,40 @@ func TestParseIndexedEstimateRejectsUnusableWorkerResponses(t *testing.T) {
 				t.Fatalf("parseIndexedEstimate = %d, %v; want %d, %v", got, ok, test.want, test.ok)
 			}
 		})
+	}
+}
+
+func TestRunIndexedCountTimeoutRejectsStalledWorker(t *testing.T) {
+	previous := indexedCountCommand
+	indexedCountCommand = func(ctx context.Context, _, _ string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	defer func() { indexedCountCommand = previous }()
+
+	if total, known := runIndexedCountWithTimeoutDuration("ignored", "ignored", time.Millisecond); known || total != 0 {
+		t.Fatalf("stalled count-worker result = %d, %v; want 0, false", total, known)
+	}
+}
+
+func TestSameSourceSnapshotRejectsChangedFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "source.ost")
+	if err := os.WriteFile(file, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("after with different size"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameSourceSnapshot(before, after) {
+		t.Fatal("changed source was treated as unchanged")
 	}
 }
 
