@@ -15,6 +15,8 @@ implementation notes and evidence, not a second queue.
 - [x] Run one full `go test -trimpath ./...` with corrected `GOROOT` and
   `GOPATH`; record failures only, without adding unrelated features.
 - [x] Confirm the long-run mbox smoke remains green after the full run.
+- [x] Compare page/root CRC diagnostics across the available fixtures; keep
+  them advisory and do not trigger recovery from CRC mismatches alone.
 
 The current checkpoint is reproducibly testable in a fresh Go process.
 
