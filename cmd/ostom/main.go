@@ -753,6 +753,10 @@ func runIndexedCountWithTimeout(executable, source string) (int, bool) {
 	if err != nil || ctx.Err() != nil {
 		return 0, false
 	}
+	return parseIndexedEstimate(data)
+}
+
+func parseIndexedEstimate(data []byte) (int, bool) {
 	var report indexedEstimateReport
 	if err := json.Unmarshal(data, &report); err != nil || !report.Known || report.Messages <= 0 {
 		return 0, false
@@ -946,15 +950,18 @@ func printProgress(label string, done, total int) {
 // throughput. It deliberately returns no ETA during warm-up or when the
 // producer has not supplied a reliable total.
 func estimateProgress(label string, done, total int) (int, float64) {
+	return estimateProgressAt(label, done, total, time.Now())
+}
+
+func estimateProgressAt(label string, done, total int, now time.Time) (int, float64) {
 	if done < 0 {
 		done = 0
 	}
 	tracker := progressEstimators[label]
 	if tracker == nil || done == 0 || (tracker.lastAt.IsZero() == false && done < tracker.lastDone) {
-		tracker = &progressEstimator{startedAt: time.Now()}
+		tracker = &progressEstimator{startedAt: now}
 		progressEstimators[label] = tracker
 	}
-	now := time.Now()
 	if !tracker.lastAt.IsZero() {
 		dt := now.Sub(tracker.lastAt).Seconds()
 		delta := done - tracker.lastDone

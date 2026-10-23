@@ -319,6 +319,7 @@ internal sealed class MainForm : Form
             var etaKnown = root.TryGetProperty("eta_known", out var etaFlag) && etaFlag.GetBoolean();
             var etaSeconds = root.TryGetProperty("eta_seconds", out var etaValue) ? etaValue.GetInt32() : 0;
             var rate = root.TryGetProperty("rate", out var rateValue) ? rateValue.GetDouble() : 0;
+            var unit = root.TryGetProperty("unit", out var unitValue) ? unitValue.GetString() ?? "items" : "items";
             if (!IsDisposed) BeginInvoke(() =>
             {
                 if (total > 0)
@@ -339,7 +340,7 @@ internal sealed class MainForm : Form
                 var suffix = etaKnown
                     ? $" · {T("осталось", "about")} {FormatDuration(etaSeconds)}"
                     : rate > 0
-                        ? $" · {rate:0.0} {T("объектов/с", "items/s")}"
+                        ? $" · {rate:0.0} {FormatRateUnit(unit)}"
                         : "";
                 progressText.Text = count + suffix;
             });
@@ -355,6 +356,15 @@ internal sealed class MainForm : Form
             ? $"{(int)span.TotalHours}:{span.Minutes:00}:{span.Seconds:00}"
             : $"{span.Minutes}:{span.Seconds:00}";
     }
+
+    private string FormatRateUnit(string unit) => unit switch
+    {
+        "messages" => T("сообщений/с", "messages/s"),
+        "candidates" => T("сообщений/с", "messages/s"),
+        "folders" => T("папок/с", "folders/s"),
+        "bytes" => T("байт/с", "bytes/s"),
+        _ => T("элементов/с", "items/s")
+    };
 
     private string FriendlyProgress(string value) => value switch
     {

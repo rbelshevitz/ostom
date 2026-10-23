@@ -65,6 +65,20 @@ func TestExportFixturePreservesHierarchy(t *testing.T) {
 	}
 }
 
+func TestEstimateIndexedMessagesFixture(t *testing.T) {
+	input := filepath.Join("..", "..", "..", "testdata", "fixtures", "sample.ost")
+	if _, err := os.Stat(input); err != nil {
+		t.Skipf("local integration fixture unavailable: %v", err)
+	}
+	total, known, err := EstimateIndexedMessages(input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !known || total != 1 {
+		t.Fatalf("indexed estimate = total %d known %v, want 1 and true", total, known)
+	}
+}
+
 func TestExportFixtureMboxOnlyDoesNotDuplicateEML(t *testing.T) {
 	input := filepath.Join("..", "..", "..", "testdata", "fixtures", "sample.ost")
 	if _, err := os.Stat(input); err != nil {
