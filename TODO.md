@@ -231,6 +231,8 @@ truncated.
   collected by an isolated, 30-second-bounded count worker; a failed preflight
   cannot block the main export. Verified on `fifty.ost`: 2,178 messages,
   168 attachments, 0 partial messages, and 0 attachment failures.
+- [x] Add deterministic ETA/count-worker tests and localize progress-rate units
+  in the GUI for Russian and English regions.
 - [ ] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
   work, failed export, partial recovery, and successful export.
 
