@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ostom/internal/recovery/session"
 )
 
 // This test uses the local parser-validated fixture when it is available.
@@ -24,6 +26,11 @@ func TestExportFixturePreservesHierarchy(t *testing.T) {
 	}
 	if report.Folders == 0 {
 		t.Fatal("export reported no folders")
+	}
+	for _, reportError := range report.Errors {
+		if strings.Contains(reportError, "folder has no messages") {
+			t.Fatalf("empty folder was reported as an export error: %q", reportError)
+		}
 	}
 	if report.Messages != 1 {
 		t.Fatalf("exported messages = %d, want 1", report.Messages)
@@ -74,6 +81,134 @@ func TestExportFixtureMboxOnlyDoesNotDuplicateEML(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "OSTOM EML")); !os.IsNotExist(err) {
 		t.Fatalf("mbox-only export created EML tree: err=%v", err)
 	}
+}
+
+func TestExportFixtureResumeDoesNotRewriteSkippedJournalState(t *testing.T) {
+	input := filepath.Join("..", "..", "..", "testdata", "fixtures", "sample.ost")
+	if _, err := os.Stat(input); err != nil {
+		t.Skipf("local integration fixture unavailable: %v", err)
+	}
+	out := t.TempDir()
+	first, err := ExportWithProgressMode(input, out, nil, 0, false, nil, EMLNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.MessageStatus) != 1 || first.MessageStatus[0].Identity == "" {
+		t.Fatalf("first export status = %+v", first.MessageStatus)
+	}
+	mbox := filepath.Join(out, "Local Folders", "Top of Personal Folders.sbd", "myInbox")
+	before, err := os.ReadFile(mbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var callbacks []MessageStatus
+	second, err := ExportWithProgressModeAndCallbacks(input, out, nil, 0, false, nil, EMLNone,
+		func(status MessageStatus) { callbacks = append(callbacks, status) },
+		func(identity string) bool { return identity == first.MessageStatus[0].Identity })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SkippedMessages != 1 || len(callbacks) != 0 {
+		t.Fatalf("resume skipped=%d callbacks=%+v", second.SkippedMessages, callbacks)
+	}
+	after, err := os.ReadFile(mbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("resume changed the mbox for a durably skipped message")
+	}
+}
+
+func TestExportFixtureIndexedResumeRepairsTornMessage(t *testing.T) {
+	input := filepath.Join("..", "..", "..", "testdata", "fixtures", "sample.ost")
+	if _, err := os.Stat(input); err != nil {
+		t.Skipf("local integration fixture unavailable: %v", err)
+	}
+	out := t.TempDir()
+	journalPath := filepath.Join(out, "items.jsonl")
+	journal, err := session.OpenJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ExportWithProgressModeAndCallbacks(input, out, nil, 0, false, nil, EMLNone,
+		func(status MessageStatus) {
+			if appendErr := journal.Append(session.ItemEntry{
+				Identity: status.Identity, Kind: "message", Route: "indexed", Status: status.Outcome,
+				OutputPath: status.OutputPath, OutputOffset: status.OutputOffset,
+			}); appendErr != nil {
+				t.Fatal(appendErr)
+			}
+		}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.MessageStatus) != 1 || first.MessageStatus[0].Outcome != "exported" {
+		t.Fatalf("first export status = %+v", first.MessageStatus)
+	}
+	status := first.MessageStatus[0]
+	if err := journal.Append(session.ItemEntry{
+		Identity: status.Identity, Kind: "message", Route: "indexed", Status: "in_progress",
+		OutputPath: status.OutputPath, OutputOffset: status.OutputOffset,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(status.OutputPath, append(mustReadFile(t, status.OutputPath), []byte("torn-tail")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RepairIndexedOutputs(journalPath); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := session.Completed(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed[status.Identity] {
+		t.Fatal("torn message was still considered completed")
+	}
+
+	journal, err = session.OpenJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ExportWithProgressModeAndCallbacks(input, out, nil, 0, false, nil, EMLNone,
+		func(status MessageStatus) {
+			if appendErr := journal.Append(session.ItemEntry{Identity: status.Identity, Kind: "message", Route: "indexed", Status: status.Outcome, OutputPath: status.OutputPath, OutputOffset: status.OutputOffset}); appendErr != nil {
+				t.Fatal(appendErr)
+			}
+		}, func(identity string) bool { return completed[identity] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if second.Messages != 1 || second.SkippedMessages != 0 {
+		t.Fatalf("resume report = %+v", second)
+	}
+	data := mustReadFile(t, status.OutputPath)
+	if bytes.Count(data, []byte("\nFrom "))+boolToInt(bytes.HasPrefix(data, []byte("From "))) != 1 {
+		t.Fatalf("resumed mbox contains unexpected message count: %d", bytes.Count(data, []byte("From ")))
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func TestExportCorpusPreservesAttachments(t *testing.T) {

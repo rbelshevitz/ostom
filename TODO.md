@@ -12,12 +12,32 @@ implementation notes and evidence, not a second queue.
 
 ### 1. Verify the current checkpoint — next session
 
-- [ ] Run one full `go test -trimpath ./...` with corrected `GOROOT` and
+- [x] Run one full `go test -trimpath ./...` with corrected `GOROOT` and
   `GOPATH`; record failures only, without adding unrelated features.
-- [ ] Confirm the committed tree is clean and the long-run mbox smoke remains
-  green after the full run.
+- [ ] Confirm the committed tree is clean after the changes are committed.
+- [x] Confirm the long-run mbox smoke remains green after the full run.
 
 Done means the current commit is reproducibly testable in a fresh Go process.
+
+### Practical milestone — streaming export
+
+- [x] Verify the normal OST/PST → Thunderbird-compatible mbox path on the real
+  `fifty.ost`: 2,178 messages, 168 attachments, 0 partial messages, and 0
+  attachment failures.
+- [x] Keep streaming output, reporting, and the manifest; isolate native
+  fallback output when indexed export fails so results are not mixed.
+- [x] Record a green full `go test -trimpath ./...` run.
+- [x] Reduce the append-only journal through an external identity sort when
+  building the final manifest, without retaining the full history in memory.
+- [x] For native batches, write `in_progress` before processing and durable
+  final states only after batch validation and commit.
+- [x] Do not classify normal empty/search folders as indexed export errors.
+- [x] Verify indexed resume on an OST with an artificially torn mbox: repair
+  `OutputOffset` and replay the message without duplication.
+
+This milestone closes the practical export scenario for readable data. PST/OST
+repacking, full streaming inventory, and additional real corpora remain separate
+follow-up work.
 
 ### 2. Finish resumable inventory and manifest
 
@@ -167,7 +187,7 @@ truncated.
   as safely retryable.
 - [ ] Make each batch transactional: write to a temporary destination, verify
   it, atomically finalize it, then commit the manifest record and checkpoint.
-- [ ] Resume only when the source fingerprint and relevant options match;
+- [x] Resume only when the source fingerprint and relevant options match;
   refuse to mix results from different source files or incompatible runs.
 - [ ] Add deterministic deduplication for indexed/native results so a resumed
   or fallback pass cannot export the same message or attachment twice.
@@ -203,9 +223,9 @@ truncated.
 - [x] Rebuild `ostom.ico` from the canonical PNG with explicit 16×16 through
   256×256 layers; embed the source icon in the GUI so it is not required as a
   separate file beside the published EXE.
-- [x] Publish the user-facing Windows package as a self-contained single-file
-  GUI; treat the framework-dependent `ostom-gui.dll` output as an intermediate
-  build layout, not the primary handoff.
+- [x] Publish the user-facing Windows package as a framework-dependent
+  single-file GUI requiring the x64 .NET 8 Desktop Runtime, with the matching
+  `ostom.exe` beside it.
 - [ ] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
   work, failed export, partial recovery, and successful export.
 

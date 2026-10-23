@@ -76,7 +76,11 @@ func Open(exportDir, source string, options Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	identity := sha256.Sum256([]byte(absoluteSource + "\x00" + absoluteExport + "\x00" + fingerprint.SizeString() + fmt.Sprintf(":%t:%t", options.RecoveryScan, options.FullEML)))
+	// Keep the session directory stable for one source/export/options tuple.
+	// The file fingerprint belongs in session.json and must be compared there;
+	// putting it in the directory name would silently create a new session when
+	// the source changes and could allow visible output to be mixed.
+	identity := sha256.Sum256([]byte(absoluteSource + "\x00" + absoluteExport + fmt.Sprintf(":%t:%t", options.RecoveryScan, options.FullEML)))
 	sessionID := hex.EncodeToString(identity[:])[:24]
 	directory := filepath.Join(absoluteExport, ".ostom", "sessions", sessionID)
 	if err := os.MkdirAll(directory, 0o700); err != nil {

@@ -141,7 +141,7 @@ func main() {
 		return
 	}
 	if *nativeWorker {
-		runNativeWorker(flag.Arg(0), *exportDir, *quiet, *fullEML, *workDir)
+		runNativeWorker(flag.Arg(0), *exportDir, *quiet, *fullEML, *workDir, *journalFile)
 		return
 	}
 	if *nativeAnalyzeWorker {
@@ -216,7 +216,7 @@ func main() {
 			} else {
 				r.RecoveryRun = "automatic"
 			}
-			nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession))
+			nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession), journalPath)
 			r.Native = &nativeReport
 			if nativeErr != nil {
 				r.Errors = append(r.Errors, "recovery scan: "+nativeErr.Error())
@@ -247,15 +247,19 @@ func main() {
 					r.IndexedStatus = "timeout"
 				}
 				r.Warnings = append(r.Warnings, "indexed export: "+exportErr.Error())
-				// A slow indexed traversal must not leave the user with no export.
-				// Switch to the bounded native path automatically after the watchdog
-				// fires; its output is kept in a separate recovery mailbox tree.
-				if r.IndexedStatus == "timeout" && r.Native == nil {
-					nativeReport, nativeErr := runNativeExportWithTimeout(source, filepath.Join(*exportDir, "Local Folders"), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession))
+				// An indexed failure must not leave the user with no export. The
+				// bounded native path is the recovery fallback for both watchdog
+				// timeouts and backend errors; its output is kept in a separate
+				// recovery mailbox tree.
+				if r.Native == nil && indexedFailureUsesNativeFallback(r.IndexedStatus) {
+					nativeReport, nativeErr := runNativeExportWithTimeout(source, nativeFallbackDirectory(*exportDir, runRecovery), info.Size(), *quiet, *fullEML, nativeWorkDir(runSession), journalPath)
 					r.Native = &nativeReport
 					if nativeErr != nil {
 						r.Errors = append(r.Errors, "recovery fallback: "+nativeErr.Error())
 					}
+				}
+				if r.Native != nil && r.Native.Collection.Status != "completed" && r.Native.Export.Written == 0 {
+					r.Errors = append(r.Errors, "native recovery: no exportable messages were recovered ("+r.Native.Collection.Status+")")
 				}
 			} else {
 				r.IndexedStatus = "completed"
@@ -394,48 +398,58 @@ func existingDestination(exportDir, outputDir string) string {
 }
 
 func writeRecoveryManifest(outputDir, source string, r report, nativeManifestPath, journalPath string) error {
-	records := make([]manifest.Record, 0)
-	if journalPath != "" {
-		latest, err := session.Latest(journalPath)
-		if err != nil {
-			return err
-		}
-		for _, entry := range latest {
-			records = append(records, manifest.Record{
-				Kind: entry.Kind, Source: firstNonEmpty(entry.Source, source), Identity: entry.Identity, Route: entry.Route,
-				FolderPath: entry.Folder, MessageID: entry.MessageID, Status: entry.Status, DeclaredBytes: entry.DeclaredBytes,
-				ReadableBytes: entry.ReadableBytes, ExportedBytes: entry.ExportedBytes,
-				SHA256: entry.SHA256, OutputPath: entry.OutputPath, Errors: nonEmptyErrors(entry.Error),
+	return manifest.WriteStream(outputDir, source, func(visit func(manifest.Record) error) error {
+		emitted := 0
+		if journalPath != "" {
+			err := session.StreamLatest(journalPath, func(entry session.ItemEntry) error {
+				emitted++
+				return visit(manifest.Record{
+					Kind: entry.Kind, Source: firstNonEmpty(entry.Source, source), Identity: entry.Identity, Route: entry.Route,
+					FolderPath: entry.Folder, MessageID: entry.MessageID, Status: entry.Status, DeclaredBytes: entry.DeclaredBytes,
+					ReadableBytes: entry.ReadableBytes, ExportedBytes: entry.ExportedBytes,
+					SHA256: entry.SHA256, OutputPath: entry.OutputPath, Errors: nonEmptyErrors(entry.Error),
+				})
 			})
-		}
-	}
-	if len(records) == 0 && r.Indexed != nil {
-		for _, status := range r.Indexed.MessageStatus {
-			records = append(records, manifest.Record{
-				Kind: "message", Source: "indexed", Identity: fmt.Sprintf("indexed-message-%08d", status.Index),
-				Route: "indexed", FolderPath: status.Folder, MessageID: status.MessageID, Status: status.Outcome,
-				Errors: nonEmptyErrors(status.Error),
-			})
-		}
-		if len(r.Indexed.MessageStatus) == 0 && len(r.Errors) > 0 {
-			records = append(records, manifest.Record{
-				Kind: "message", Source: "indexed", Identity: "indexed-export", Route: "indexed",
-				Status: "skipped", Errors: []string{"indexed export did not produce per-message records"},
-			})
-		}
-	}
-	if r.Native != nil {
-		if nativeManifestPath != "" {
-			nativeRecords, err := native.ReadManifest(nativeManifestPath)
 			if err != nil {
-				return fmt.Errorf("read native manifest: %w", err)
+				return err
 			}
-			records = append(records, nativeRecords...)
-		} else {
-			records = append(records, r.Native.Export.ManifestRecords...)
 		}
-	}
-	return manifest.WriteOwned(outputDir, source, records)
+		if emitted == 0 && r.Indexed != nil {
+			for _, status := range r.Indexed.MessageStatus {
+				emitted++
+				if err := visit(manifest.Record{
+					Kind: "message", Source: "indexed", Identity: fmt.Sprintf("indexed-message-%08d", status.Index),
+					Route: "indexed", FolderPath: status.Folder, MessageID: status.MessageID, Status: status.Outcome,
+					Errors: nonEmptyErrors(status.Error),
+				}); err != nil {
+					return err
+				}
+			}
+			if len(r.Indexed.MessageStatus) == 0 && len(r.Errors) > 0 {
+				emitted++
+				if err := visit(manifest.Record{
+					Kind: "message", Source: "indexed", Identity: "indexed-export", Route: "indexed",
+					Status: "skipped", Errors: []string{"indexed export did not produce per-message records"},
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		if r.Native != nil {
+			if nativeManifestPath != "" {
+				if err := native.StreamManifest(nativeManifestPath, visit); err != nil {
+					return fmt.Errorf("read native manifest: %w", err)
+				}
+			} else {
+				for _, record := range r.Native.Export.ManifestRecords {
+					if err := visit(record); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func nativeManifestPath(store *session.Store) string {
@@ -499,7 +513,7 @@ func nativeExportTimeout(fileSize int64) time.Duration {
 	return timeout
 }
 
-func runNativeExportWithTimeout(source, output string, fileSize int64, quiet, fullEML bool, workDir string) (native.PipelineReport, error) {
+func runNativeExportWithTimeout(source, output string, fileSize int64, quiet, fullEML bool, workDir, journalFile string) (native.PipelineReport, error) {
 	result := native.PipelineReport{}
 	executable, err := os.Executable()
 	if err != nil {
@@ -508,6 +522,9 @@ func runNativeExportWithTimeout(source, output string, fileSize int64, quiet, fu
 	args := []string{"-native-worker", "-export-dir", output}
 	if workDir != "" {
 		args = append(args, "-work-dir", workDir)
+	}
+	if journalFile != "" {
+		args = append(args, "-journal-file", journalFile)
 	}
 	if jsonProgress {
 		args = append(args, "-progress-json")
@@ -595,6 +612,17 @@ func indexedExportDirectory(exportDir string, nativeRecovery bool) string {
 		return filepath.Join(exportDir, "Indexed")
 	}
 	return exportDir
+}
+
+func indexedFailureUsesNativeFallback(status string) bool {
+	return status == "timeout" || status == "timeout_or_failed"
+}
+
+func nativeFallbackDirectory(exportDir string, nativeRecoveryAlreadyRun bool) string {
+	if nativeRecoveryAlreadyRun {
+		return filepath.Join(exportDir, "Local Folders")
+	}
+	return filepath.Join(exportDir, "Native Recovery", "Local Folders")
 }
 
 func runIndexedExportWithTimeout(source, output string, recovery bool, fileSize int64, journalFile string, progress func(done, total int), quiet, fullEML bool) (gopst.Report, error) {
@@ -743,7 +771,7 @@ func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, hear
 	}
 }
 
-func runNativeWorker(source, output string, quiet, fullEML bool, workDir string) {
+func runNativeWorker(source, output string, quiet, fullEML bool, workDir, journalFile string) {
 	info, err := os.Stat(source)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "native worker: stat source: %v\n", err)
@@ -761,6 +789,7 @@ func runNativeWorker(source, output string, quiet, fullEML bool, workDir string)
 	}
 	limits := defaultNativeLimits(fullEML)
 	limits.WorkDir = workDir
+	limits.JournalPath = journalFile
 	if limits.WorkDir == "" {
 		limits.WorkDir = filepath.Join(filepath.Dir(output), ".ostom", "native-work")
 	}

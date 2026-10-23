@@ -3,6 +3,7 @@ package native
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +12,107 @@ import (
 	"testing"
 
 	"ostom/internal/format"
+	"ostom/internal/recovery/manifest"
+	"ostom/internal/recovery/session"
 )
+
+func TestAppendJournalRecordUsesDurableItemStates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "items.jsonl")
+	journal, err := session.OpenJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJournalRecord(journal, manifest.Record{
+		Kind: "message", Source: "native", Identity: "native-bid-1", Route: "native-recovered", Status: "recovered",
+		ReadableBytes: 12, ExportedBytes: 12,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJournalRecord(journal, manifest.Record{
+		Kind: "attachment", Source: "native", Identity: "native-bid-1-nid-2", Route: "native-recovered", Status: "unavailable",
+		Errors: []string{"missing payload"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := session.Latest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest["native-bid-1"].Status != "exported" || latest["native-bid-1-nid-2"].Status != "failed" {
+		t.Fatalf("unexpected native journal states: %+v", latest)
+	}
+}
+
+func TestReconcileCommittedJournalAfterBatchCommit(t *testing.T) {
+	root := t.TempDir()
+	batchDir := filepath.Join(root, "batch-000001")
+	if err := os.MkdirAll(batchDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := manifest.Record{
+		Kind: "message", Source: "native", Identity: "native-bid-0001", Route: "native-recovered",
+		Status: "recovered", ReadableBytes: 7, ExportedBytes: 7, OutputPath: "Local Folders\\OSTOM Recovered",
+	}
+	manifestPath := filepath.Join(batchDir, "manifest.jsonl")
+	manifestFile, err := os.Create(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(manifestFile).Encode(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifestFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	outputDir := filepath.Join(batchDir, "output")
+	if err := os.MkdirAll(outputDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "message"), []byte("output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputBytes, outputSHA, err := session.DigestArtifact(batchDir, "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, manifestSHA, err := session.DigestArtifact(batchDir, "manifest.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.WriteBatchRecord(batchDir, session.Batch{
+		Number: 1, Status: "committed", Artifact: "output", Bytes: outputBytes, SHA256: outputSHA,
+		Manifest: "manifest.jsonl", ManifestBytes: manifestBytes, ManifestSHA256: manifestSHA,
+		Identities: []string{record.Identity},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	journalPath := filepath.Join(root, "items.jsonl")
+	journal, err := session.OpenJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Append(session.ItemEntry{Identity: record.Identity, Kind: "message", Route: "native-recovered", Status: "in_progress"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := map[string]bool{record.Identity: false}
+	if err := reconcileCommittedJournal(journal, []string{batchDir}, completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := session.Latest(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest[record.Identity].Status != "exported" || !completed[record.Identity] {
+		t.Fatalf("committed batch did not reconcile journal: latest=%+v completed=%v", latest, completed)
+	}
+}
 
 func TestExportStreamsLazyLargeAttachment(t *testing.T) {
 	root := t.TempDir()

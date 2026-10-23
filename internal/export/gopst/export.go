@@ -295,6 +295,10 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 
 	iter, err := folder.GetMessageIterator()
 	if err != nil {
+		if errors.Is(err, pst.ErrMessagesNotFound) {
+			r.EmptyFolders++
+			return nil
+		}
 		return fmt.Errorf("read messages in %q: %w", strings.Join(path, "\\"), err)
 	}
 	attemptsBefore := r.MessagesAttempted
@@ -307,14 +311,14 @@ func exportFolder(folder pst.Folder, root, emlRoot string, path []string, r *Rep
 		messageIndex := r.MessagesAttempted
 		identity := fmt.Sprintf("indexed-folder-%d-message-%d", folder.Identifier, iter.Value().Identifier)
 		messageID := indexedMessageID(iter.Value())
-		if item != nil {
-			item(MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), MessageID: messageID, OutputPath: filePath, OutputOffset: messageOffset, Outcome: "in_progress"})
-		}
 		if skip != nil && skip(identity) {
 			status := MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), MessageID: messageID, OutputPath: filePath, OutputOffset: messageOffset, Outcome: "skipped"}
 			r.SkippedMessages++
 			recordMessageStatus(r, status)
 			continue
+		}
+		if item != nil {
+			item(MessageStatus{Index: messageIndex, Identity: identity, Folder: strings.Join(path, "\\"), MessageID: messageID, OutputPath: filePath, OutputOffset: messageOffset, Outcome: "in_progress"})
 		}
 		var written int
 		var partial bool

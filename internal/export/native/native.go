@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"ostom/internal/export/mbox"
@@ -49,6 +50,7 @@ type Limits struct {
 	MaxErrorSamples    int
 	WriteEML           bool
 	WorkDir            string
+	JournalPath        string
 }
 
 const (
@@ -98,6 +100,27 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 		return PipelineReport{}, err
 	}
 	committedBatches, completedIdentities := loadCommittedBatches(limits.WorkDir)
+	var journal *recoverySession.Journal
+	var err error
+	if limits.JournalPath != "" {
+		journal, err = recoverySession.OpenJournal(limits.JournalPath)
+		if err != nil {
+			return PipelineReport{}, err
+		}
+		defer journal.Close()
+		completed, completedErr := recoverySession.Completed(limits.JournalPath)
+		if completedErr != nil {
+			return PipelineReport{}, completedErr
+		}
+		for identity, done := range completed {
+			if done {
+				completedIdentities[identity] = true
+			}
+		}
+		if err := reconcileCommittedJournal(journal, committedBatches, completed); err != nil {
+			return PipelineReport{}, err
+		}
+	}
 	exportReport := Report{Backend: "native-recovered", EMLMode: "none"}
 	manifestPath := filepath.Join(limits.WorkDir, "native-manifest.jsonl")
 	if limits.WriteEML {
@@ -168,6 +191,13 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 		if err := os.Rename(stagingDir, batchDir); err != nil {
 			return fmt.Errorf("finalize native batch: %w", err)
 		}
+		if journal != nil {
+			for _, item := range one.ManifestRecords {
+				if err := appendJournalRecord(journal, item); err != nil {
+					return err
+				}
+			}
+		}
 		committedBatches = append(committedBatches, batchDir)
 		mergeReports(&exportReport, &one)
 		exported += len(batch)
@@ -187,6 +217,14 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 		identity := fmt.Sprintf("native-bid-%016X", message.BID)
 		if completedIdentities[identity] {
 			return nil
+		}
+		if journal != nil {
+			if err := journal.Append(recoverySession.ItemEntry{
+				Source: name, Identity: identity, Kind: "message", Route: "native-recovered",
+				Folder: filepath.Join(message.FolderPath...), MessageID: message.MessageID, Status: "in_progress",
+			}); err != nil {
+				return err
+			}
 		}
 		messageBytes := len(message.Body)
 		for _, attachment := range message.Attachments {
@@ -244,6 +282,52 @@ func recoverAndExportStreaming(name, root string, h format.Header, fileSize int6
 		}
 	}
 	return report, nil
+}
+
+func appendJournalRecord(journal *recoverySession.Journal, record manifest.Record) error {
+	status := "failed"
+	switch record.Status {
+	case "recovered", "exported":
+		status = "exported"
+	case "partial":
+		status = "partial"
+	case "skipped":
+		status = "skipped"
+	}
+	errText := ""
+	if len(record.Errors) > 0 {
+		errText = strings.Join(record.Errors, "; ")
+	}
+	return journal.Append(recoverySession.ItemEntry{
+		Source: record.Source, Identity: record.Identity, Kind: record.Kind, Route: record.Route,
+		Folder: record.FolderPath, MessageID: record.MessageID, Status: status,
+		DeclaredBytes: record.DeclaredBytes, ReadableBytes: record.ReadableBytes,
+		ExportedBytes: record.ExportedBytes, SHA256: record.SHA256, OutputPath: record.OutputPath,
+		Error: errText,
+	})
+}
+
+func reconcileCommittedJournal(journal *recoverySession.Journal, batches []string, completed map[string]bool) error {
+	for _, batchDir := range batches {
+		record, err := recoverySession.ReadBatchRecord(batchDir)
+		if err != nil {
+			return fmt.Errorf("read committed native batch: %w", err)
+		}
+		records, err := ReadManifest(filepath.Join(batchDir, record.Manifest))
+		if err != nil {
+			return fmt.Errorf("read committed native batch manifest: %w", err)
+		}
+		for _, item := range records {
+			if item.Identity == "" || completed[item.Identity] {
+				continue
+			}
+			if err := appendJournalRecord(journal, item); err != nil {
+				return err
+			}
+			completed[item.Identity] = item.Status == "recovered" || item.Status == "exported"
+		}
+	}
+	return nil
 }
 
 func loadCommittedBatches(workDir string) ([]string, map[string]bool) {
@@ -380,6 +464,32 @@ func ReadManifest(path string) ([]manifest.Record, error) {
 		return nil, err
 	}
 	return records, nil
+}
+
+// StreamManifest visits native manifest records one at a time. It keeps the
+// final inventory bounded when the caller is assembling the user-facing
+// manifest for a large recovery.
+func StreamManifest(path string, visit func(manifest.Record) error) error {
+	if visit == nil {
+		return fmt.Errorf("native manifest visitor is nil")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		var record manifest.Record
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			return err
+		}
+		if err := visit(record); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 func appendExportErrorText(report *Report, message string) {

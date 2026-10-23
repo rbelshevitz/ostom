@@ -3,6 +3,7 @@ param(
     [ValidateRange(1, 4096)]
     [int]$SizeMb = 100,
     [string]$OutputPath = "",
+    [string]$WorkDirectory = "",
     [switch]$Force
 )
 
@@ -25,7 +26,13 @@ if ((Test-Path -LiteralPath $OutputPath) -and -not $Force) {
     throw "Output already exists: $OutputPath. Use -Force to replace it."
 }
 
-$workRoot = Join-Path ([IO.Path]::GetTempPath()) "ostom-pst-builder-$([guid]::NewGuid().ToString('N'))"
+if ([string]::IsNullOrWhiteSpace($WorkDirectory)) {
+    $WorkDirectory = Join-Path $outputDirectory ".ostom-pst-builder"
+} elseif (-not [IO.Path]::IsPathRooted($WorkDirectory)) {
+    $WorkDirectory = Join-Path $repoRoot $WorkDirectory
+}
+$WorkDirectory = [IO.Path]::GetFullPath($WorkDirectory)
+$workRoot = Join-Path $WorkDirectory "run-$([guid]::NewGuid().ToString('N'))"
 $zipPath = Join-Path $workRoot 'PST-Builder.zip'
 $sourceRoot = Join-Path $workRoot "PST-Builder-$builderCommit"
 $projectPath = Join-Path $sourceRoot 'samples\PstBuilder.LargeTest\PstBuilder.LargeTest.csproj'

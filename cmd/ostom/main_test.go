@@ -59,6 +59,23 @@ func TestIndexedExportDirectoryIsolatedFromNativeRecovery(t *testing.T) {
 	}
 }
 
+func TestIndexedFailureAlwaysUsesNativeFallback(t *testing.T) {
+	for _, status := range []string{"timeout", "timeout_or_failed"} {
+		if !indexedFailureUsesNativeFallback(status) {
+			t.Fatalf("indexed status %q did not select native fallback", status)
+		}
+	}
+}
+
+func TestNativeFallbackDirectoryIsolatedFromPartialIndexedOutput(t *testing.T) {
+	if got, want := nativeFallbackDirectory("export", false), filepath.Join("export", "Native Recovery", "Local Folders"); got != want {
+		t.Fatalf("fallback directory = %q, want %q", got, want)
+	}
+	if got, want := nativeFallbackDirectory("export", true), filepath.Join("export", "Local Folders"); got != want {
+		t.Fatalf("preselected native directory = %q, want %q", got, want)
+	}
+}
+
 func TestExitCodeDistinguishesPartialAndInvalidRuns(t *testing.T) {
 	if got := exitCode(report{Status: "completed"}); got != exitOK {
 		t.Fatalf("completed exit code = %d, want %d", got, exitOK)

@@ -1,11 +1,51 @@
 package manifest
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestWriteStreamKeepsBoundedChunksAndDuplicateEvidence(t *testing.T) {
+	dir := t.TempDir()
+	const total = 2049
+	if err := WriteStream(dir, "sample.ost", func(visit func(Record) error) error {
+		for index := total - 1; index >= 0; index-- {
+			record := Record{Kind: "message", Source: "native", Identity: fmt.Sprintf("%04d", index), Route: "native", Status: "recovered"}
+			if index == total-1 {
+				record.MessageID = "<same@example.test>"
+				record.Errors = []string{"z", "a"}
+			}
+			if err := visit(record); err != nil {
+				return err
+			}
+		}
+		duplicate := Record{Kind: "message", Source: "native", Identity: "duplicate", Route: "native", MessageID: "<same@example.test>", Status: "recovered"}
+		return visit(duplicate)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "recovery-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document Document
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Summary.Total != total+1 || document.Summary.DuplicateCandidates != 1 || document.Summary.UniqueMessages != total {
+		t.Fatalf("unexpected streamed summary: %+v", document.Summary)
+	}
+	if len(document.Records) != total+1 || document.Records[0].Identity != "0000" || document.Records[len(document.Records)-1].Identity != "duplicate" {
+		t.Fatalf("unexpected streamed record order: first=%q last=%q count=%d", document.Records[0].Identity, document.Records[len(document.Records)-1].Identity, len(document.Records))
+	}
+	if document.Records[total].DuplicateOf == "" {
+		t.Fatal("streamed duplicate evidence was not recorded")
+	}
+}
 
 func TestWriteProducesSortedEquivalentManifests(t *testing.T) {
 	dir := t.TempDir()

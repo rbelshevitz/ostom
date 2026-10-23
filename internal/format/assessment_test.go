@@ -2,6 +2,13 @@ package format
 
 import "testing"
 
+func TestAssessFileRequiresRecoveryWhenHeaderRootsAreMissing(t *testing.T) {
+	assessment := AssessFile(Header{OK: true, Roots: "missing NBT/BBT root"}, IndexRootScan{Status: "not applicable"}, 1024)
+	if assessment.Classification != "degraded" || assessment.DeepRecovery != "required" {
+		t.Fatalf("missing roots assessment = %+v", assessment)
+	}
+}
+
 func TestAssessFileKeepsAdvisoryCRCAsWarning(t *testing.T) {
 	assessment := AssessFile(Header{OK: true, HeaderCRC: "invalid"}, IndexRootScan{NBT: "valid", BBT: "valid"}, 100)
 	if assessment.Classification != "healthy" || assessment.DeepRecovery != "not_needed" || assessment.RecoveryOutlook != "uncertain" || len(assessment.Warnings) != 1 {

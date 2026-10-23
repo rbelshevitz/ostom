@@ -286,7 +286,7 @@ func TestStreamPayloadFromSourceAccepts4KInternalMarkedLeaf(t *testing.T) {
 		_, err := got.Write(chunk)
 		return err
 	})
-	if err != nil || got.String() != "compressed-leaf" || result.BytesProduced != 14 || result.BlocksRead != 1 {
+	if err != nil || got.String() != "compressed-leaf" || result.BytesProduced != uint64(len("compressed-leaf")) || result.BlocksRead != 1 {
 		t.Fatalf("unexpected 4 KiB internal leaf: %q %+v err=%v", got.String(), result, err)
 	}
 }

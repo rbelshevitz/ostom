@@ -45,6 +45,12 @@ func AssessFile(h Header, roots IndexRootScan, fileSize int64) IntegrityAssessme
 	if h.Allocation.PagesInvalid > 0 {
 		a.Warnings = append(a.Warnings, fmt.Sprintf("%d allocation pages failed validation", h.Allocation.PagesInvalid))
 	}
+	if h.Roots != "" && h.Roots != "plausible" {
+		a.Classification = "degraded"
+		a.DeepRecovery = maxRecovery(a.DeepRecovery, "required")
+		a.Confidence = "high"
+		a.Reasons = append(a.Reasons, "header index roots are not plausible: "+h.Roots)
+	}
 
 	rootFailures := 0
 	for _, root := range []struct {

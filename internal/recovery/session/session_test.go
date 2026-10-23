@@ -44,6 +44,23 @@ func TestOpenAndUpdatePersistsHiddenSessionState(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsChangedSourceFingerprint(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "sample.ost")
+	if err := os.WriteFile(source, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(root, "export"), source, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(root, "export"), source, Options{}); err == nil {
+		t.Fatal("changed source fingerprint was accepted")
+	}
+}
+
 func TestBatchRecordAndArtifactVerification(t *testing.T) {
 	root := t.TempDir()
 	storeDir := filepath.Join(root, "batch")

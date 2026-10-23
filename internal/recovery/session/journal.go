@@ -177,8 +177,16 @@ func RepairIndexedOutputs(path string) error {
 // malformed line, or any malformed line before EOF, remains an integrity
 // failure and must not be silently discarded.
 func scanJournal(file *os.File, visit func(ItemEntry)) error {
+	return scanJournalSequenced(file, func(entry ItemEntry, _ uint64) error {
+		visit(entry)
+		return nil
+	})
+}
+
+func scanJournalSequenced(file *os.File, visit func(ItemEntry, uint64) error) error {
 	reader := bufio.NewReaderSize(file, 64*1024)
 	var line []byte
+	var sequence uint64
 	for {
 		part, err := reader.ReadSlice('\n')
 		line = append(line, part...)
@@ -196,7 +204,10 @@ func scanJournal(file *os.File, visit func(ItemEntry)) error {
 			if unmarshalErr := json.Unmarshal(line, &entry); unmarshalErr != nil {
 				return fmt.Errorf("read item journal: %w", unmarshalErr)
 			}
-			visit(entry)
+			sequence++
+			if err := visit(entry, sequence); err != nil {
+				return err
+			}
 			line = line[:0]
 		}
 		if err == io.EOF {
