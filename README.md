@@ -62,7 +62,8 @@ ostom [--json] [--check|--analyze] [--progress-json] [--eml]
 - `--output-dir DIR` — write `ostom-report.json` there.
 - `--recovery-scan` — force the separate bounded recovery path.
 - `--native-only` — skip the optional indexed `go-pst` path.
-- `--eml` — additionally write one `.eml` per recovered message.
+- `--eml` — additionally write one `.eml` per recovered message on the selected
+  export paths.
 - `--json` — write the final report as JSON.
 - `--progress-json` — write machine-readable progress events to stderr.
 - `--quiet` — suppress progress text.

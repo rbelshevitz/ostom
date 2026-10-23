@@ -37,7 +37,7 @@ jobs:
           # Ask Git for tracked source files so repository/tool caches are
           # never traversed and Windows path regexes are unnecessary.
           $files = @(git ls-files -- '*.go')
-          $unformatted = @($files | ForEach-Object { gofmt -l $_.FullName })
+          $unformatted = @($files | ForEach-Object { gofmt -l $_ })
           if ($unformatted.Count -gt 0) {
             Write-Host "Unformatted Go files:"
             $unformatted | Write-Host
@@ -45,18 +45,18 @@ jobs:
           }
 
       - name: Test
-        run: go test ./...
+        run: go test -trimpath ./...
 
       - name: Vet
-        run: go vet ./...
+        run: go vet -trimpath ./...
 
       - name: Build CLI binaries
         shell: pwsh
         run: |
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
-          go build -o "$env:RUNNER_TEMP\ostom.exe" .\cmd\ostom
-          go build -o "$env:RUNNER_TEMP\ostom-fixture.exe" .\cmd\ostom-fixture
+          go build -trimpath -o "$env:RUNNER_TEMP\ostom.exe" .\cmd\ostom
+          go build -trimpath -o "$env:RUNNER_TEMP\ostom-fixture.exe" .\cmd\ostom-fixture
 
       - name: Build Windows GUI
         shell: pwsh
