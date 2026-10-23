@@ -227,6 +227,10 @@ truncated.
 - [x] Publish the user-facing Windows package as a framework-dependent
   single-file GUI requiring the x64 .NET 8 Desktop Runtime, with the matching
   `ostom.exe` beside it.
+- [x] Add phase-aware throughput and ETA reporting. Indexed message totals are
+  collected by an isolated, 30-second-bounded count worker; a failed preflight
+  cannot block the main export. Verified on `fifty.ost`: 2,178 messages,
+  168 attachments, 0 partial messages, and 0 attachment failures.
 - [ ] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
   work, failed export, partial recovery, and successful export.
 
