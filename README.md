@@ -98,8 +98,8 @@ go test -trimpath ./...
 - [Development plan](TODO.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
-The GUI release is framework-dependent and therefore small. It requires the
-[.NET 8 Desktop Runtime for Windows x64](https://dotnet.microsoft.com/download/dotnet/8.0).
+The GUI release is framework-dependent and single-file for Windows x64. It
+requires the [.NET 8 Desktop Runtime for Windows x64](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 OSTOM is independent of Microsoft and does not send source data over the
 network. Release binaries are currently unsigned; verify downloaded archives
