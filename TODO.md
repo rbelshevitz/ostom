@@ -10,14 +10,13 @@ source file.
 The queue below is the only active task list. The sections that follow are
 implementation notes and evidence, not a second queue.
 
-### 1. Verify the current checkpoint — next session
+### 1. Current checkpoint
 
 - [x] Run one full `go test -trimpath ./...` with corrected `GOROOT` and
   `GOPATH`; record failures only, without adding unrelated features.
-- [ ] Confirm the committed tree is clean after the changes are committed.
 - [x] Confirm the long-run mbox smoke remains green after the full run.
 
-Done means the current commit is reproducibly testable in a fresh Go process.
+The current checkpoint is reproducibly testable in a fresh Go process.
 
 ### Practical milestone — streaming export
 
