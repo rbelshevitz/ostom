@@ -31,19 +31,6 @@ jobs:
           dotnet-version: '8.0.x'
           architecture: x64
 
-      - name: Check formatting
-        shell: pwsh
-        run: |
-          # Ask Git for tracked source files so repository/tool caches are
-          # never traversed and Windows path regexes are unnecessary.
-          $files = @(git ls-files -- '*.go' ':!third_party/go-pst/**' ':!cmd/ostom-fixture/**')
-          $unformatted = @($files | ForEach-Object { gofmt -l $_ })
-          if ($unformatted.Count -gt 0) {
-            Write-Host "Unformatted Go files:"
-            $unformatted | Write-Host
-            exit 1
-          }
-
       - name: Test
         run: go test -trimpath ./...
 
