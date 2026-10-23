@@ -112,11 +112,9 @@ jobs:
           $notes = @"
           ## OSTOM $env:GITHUB_REF_NAME
 
-          Read-only extraction and export of readable mail from Outlook OST/PST
-          files. The package includes the CLI and a small Windows GUI.
-
-          Download ``ostom-$env:GITHUB_REF_NAME-windows-amd64.zip`` for 64-bit
-          Windows. The GUI requires the .NET 8 Desktop Runtime.
+          Faster indexed PST/OST recovery and safer large-file diagnostics.
+          Windows x64 package includes the CLI and compact GUI; the GUI requires
+          the .NET 8 Desktop Runtime.
           "@
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Set-Content -Path $notesPath -Value $notes
