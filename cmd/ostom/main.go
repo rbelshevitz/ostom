@@ -3,13 +3,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +25,16 @@ import (
 )
 
 var jsonProgress bool
+
+type progressEstimator struct {
+	lastAt    time.Time
+	lastDone  int
+	rate      float64
+	samples   int
+	startedAt time.Time
+}
+
+var progressEstimators = make(map[string]*progressEstimator)
 
 const workerStderrLimit = 64 << 10
 
@@ -112,7 +125,9 @@ func main() {
 	progressJSON := flag.Bool("progress-json", false, "write progress events as JSON lines to stderr")
 	fullEML := flag.Bool("eml", false, "also write one EML file for every indexed message")
 	indexedWorker := flag.Bool("indexed-worker", false, "internal indexed export worker")
+	indexedCountWorker := flag.Bool("indexed-count-worker", false, "internal indexed message-count worker")
 	indexedRecovery := flag.Bool("indexed-recovery", false, "internal indexed worker recovery mode")
+	expectedMessages := flag.Int("expected-messages", 0, "internal indexed message total")
 	heartbeatFile := flag.String("heartbeat-file", "", "internal worker heartbeat file")
 	journalFile := flag.String("journal-file", "", "internal worker item journal")
 	workDir := flag.String("work-dir", "", "internal worker work directory")
@@ -137,7 +152,11 @@ func main() {
 		os.Exit(exitUsage)
 	}
 	if *indexedWorker {
-		runIndexedWorker(flag.Arg(0), *exportDir, *indexedRecovery, *quiet, *fullEML, *heartbeatFile, *journalFile)
+		runIndexedWorker(flag.Arg(0), *exportDir, *indexedRecovery, *quiet, *fullEML, *heartbeatFile, *journalFile, *expectedMessages)
+		return
+	}
+	if *indexedCountWorker {
+		runIndexedCountWorker(flag.Arg(0))
 		return
 	}
 	if *nativeWorker {
@@ -631,7 +650,17 @@ func runIndexedExportWithTimeout(source, output string, recovery bool, fileSize 
 	if err != nil {
 		return result, fmt.Errorf("locate indexed worker: %w", err)
 	}
+	expectedMessages := 0
+	if !recovery {
+		if !quiet {
+			printProgress("preparing export", 0, 0)
+		}
+		expectedMessages, _ = runIndexedCountWithTimeout(executable, source)
+	}
 	args := []string{"-indexed-worker", "-export-dir", output}
+	if expectedMessages > 0 {
+		args = append(args, "-expected-messages", strconv.Itoa(expectedMessages))
+	}
 	heartbeat, err := os.CreateTemp("", "ostom-indexed-heartbeat-*")
 	if err != nil {
 		return result, fmt.Errorf("create indexed heartbeat: %w", err)
@@ -708,7 +737,42 @@ finished:
 	return result, nil
 }
 
-func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, heartbeatFile, journalFile string) {
+const indexedEstimateTimeout = 30 * time.Second
+
+type indexedEstimateReport struct {
+	Messages int  `json:"messages"`
+	Known    bool `json:"known"`
+}
+
+func runIndexedCountWithTimeout(executable, source string) (int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), indexedEstimateTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-indexed-count-worker", source)
+	cmd.WaitDelay = 2 * time.Second
+	data, err := cmd.Output()
+	if err != nil || ctx.Err() != nil {
+		return 0, false
+	}
+	var report indexedEstimateReport
+	if err := json.Unmarshal(data, &report); err != nil || !report.Known || report.Messages <= 0 {
+		return 0, false
+	}
+	return report.Messages, true
+}
+
+func runIndexedCountWorker(source string) {
+	total, known, err := gopst.EstimateIndexedMessages(source, nil)
+	if err != nil {
+		known = false
+		total = 0
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(indexedEstimateReport{Messages: total, Known: known}); err != nil {
+		fmt.Fprintf(os.Stderr, "encode indexed count report: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, heartbeatFile, journalFile string, expectedMessages int) {
 	var progress func(done, total int)
 	if !quiet {
 		progress = func(done, total int) { printProgress("standard mailbox export", done, total) }
@@ -757,7 +821,7 @@ func runIndexedWorker(source, output string, recovery, quiet, fullEML bool, hear
 			})
 		}
 	}
-	result, err := safeIndexedExport(source, output, recovery, heartbeat, progress, fullEML, item, skip)
+	result, err := safeIndexedExport(source, output, recovery, heartbeat, progress, fullEML, item, skip, expectedMessages)
 	if err == nil && journalErr != nil {
 		err = journalErr
 	}
@@ -832,23 +896,30 @@ func runNativeAnalyzeWorker(source string, quiet bool) {
 }
 
 func printProgress(label string, done, total int) {
+	eta, rate := estimateProgress(label, done, total)
 	if jsonProgress {
 		unit, basis := progressSemantics(label)
 		event := struct {
-			Event      string `json:"event"`
-			Label      string `json:"label"`
-			Done       int    `json:"done"`
-			Total      int    `json:"total"`
-			TotalKnown bool   `json:"total_known"`
-			Unit       string `json:"unit"`
-			Basis      string `json:"basis"`
-		}{Event: "progress", Label: label, Done: done, Total: total, TotalKnown: total > 0, Unit: unit, Basis: basis}
+			Event      string  `json:"event"`
+			Label      string  `json:"label"`
+			Done       int     `json:"done"`
+			Total      int     `json:"total"`
+			TotalKnown bool    `json:"total_known"`
+			Unit       string  `json:"unit"`
+			Basis      string  `json:"basis"`
+			Rate       float64 `json:"rate,omitempty"`
+			ETAKnown   bool    `json:"eta_known"`
+			ETASeconds int     `json:"eta_seconds,omitempty"`
+		}{Event: "progress", Label: label, Done: done, Total: total, TotalKnown: total > 0, Unit: unit, Basis: basis, Rate: rate, ETAKnown: eta >= 0, ETASeconds: maxInt(eta, 0)}
 		data, _ := json.Marshal(event)
 		fmt.Fprintln(os.Stderr, string(data))
 		return
 	}
 	if total <= 0 {
 		fmt.Fprintf(os.Stderr, "\r%-34s %d", label, done)
+		if rate > 0 {
+			fmt.Fprintf(os.Stderr, "  %.1f/s", rate)
+		}
 		return
 	}
 	if done < 0 {
@@ -861,13 +932,76 @@ func printProgress(label string, done, total int) {
 	filled := done * width / total
 	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
 	fmt.Fprintf(os.Stderr, "\r%-34s [%s] %d/%d", label, bar, done, total)
+	if eta >= 0 {
+		fmt.Fprintf(os.Stderr, "  ~%s", formatProgressDuration(eta))
+	} else if rate > 0 {
+		fmt.Fprintf(os.Stderr, "  %.1f/s", rate)
+	}
 	if done >= total {
 		fmt.Fprintln(os.Stderr)
 	}
 }
 
+// estimateProgress uses a time-weighted exponential average of recent
+// throughput. It deliberately returns no ETA during warm-up or when the
+// producer has not supplied a reliable total.
+func estimateProgress(label string, done, total int) (int, float64) {
+	if done < 0 {
+		done = 0
+	}
+	tracker := progressEstimators[label]
+	if tracker == nil || done == 0 || (tracker.lastAt.IsZero() == false && done < tracker.lastDone) {
+		tracker = &progressEstimator{startedAt: time.Now()}
+		progressEstimators[label] = tracker
+	}
+	now := time.Now()
+	if !tracker.lastAt.IsZero() {
+		dt := now.Sub(tracker.lastAt).Seconds()
+		delta := done - tracker.lastDone
+		if dt > 0 && delta >= 0 {
+			instant := float64(delta) / dt
+			alpha := 1 - math.Exp(-dt/15.0)
+			if tracker.rate == 0 {
+				tracker.rate = instant
+			} else {
+				tracker.rate += alpha * (instant - tracker.rate)
+			}
+			if delta > 0 {
+				tracker.samples++
+			}
+		}
+	}
+	tracker.lastAt = now
+	tracker.lastDone = done
+	if tracker.rate <= 0 || total <= 0 || done >= total || tracker.samples < 3 || now.Sub(tracker.startedAt) < 5*time.Second {
+		return -1, tracker.rate
+	}
+	return int(math.Round(float64(total-done) / tracker.rate)), tracker.rate
+}
+
+func maxInt(value, fallback int) int {
+	if value < fallback {
+		return fallback
+	}
+	return value
+}
+
+func formatProgressDuration(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	seconds %= 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%dh%02dm", minutes/60, minutes%60)
+}
+
 func progressSemantics(label string) (unit, basis string) {
 	switch label {
+	case "preparing export":
+		return "folders", "folder message-table preflight"
 	case "scanning recoverable messages":
 		return "candidates", "bounded candidate set from the available index/BBT"
 	case "writing recovered messages":
@@ -883,6 +1017,8 @@ func progressSemantics(label string) (unit, basis string) {
 
 func userProgressPhase(phase string) string {
 	switch phase {
+	case "preparing export":
+		return "preparing export"
 	case "collecting native candidates":
 		return "scanning recoverable messages"
 	case "analyzing recoverable messages":
@@ -902,7 +1038,7 @@ func trimWorkerError(value string) string {
 	return value
 }
 
-func safeIndexedExport(source, output string, recovery bool, heartbeat func(), progress func(done, total int), fullEML bool, item func(gopst.MessageStatus), skip func(string) bool) (result gopst.Report, err error) {
+func safeIndexedExport(source, output string, recovery bool, heartbeat func(), progress func(done, total int), fullEML bool, item func(gopst.MessageStatus), skip func(string) bool, expectedMessages int) (result gopst.Report, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("go-pst backend panic: %v", recovered)
@@ -912,7 +1048,7 @@ func safeIndexedExport(source, output string, recovery bool, heartbeat func(), p
 	if fullEML {
 		mode = gopst.EMLAll
 	}
-	return gopst.ExportWithProgressModeAndCallbacks(source, output, heartbeat, 0, recovery, progress, mode, item, skip)
+	return gopst.ExportWithProgressModeAndCallbacks(source, output, heartbeat, expectedMessages, recovery, progress, mode, item, skip)
 }
 
 func safeNativeExport(source, output string, h format.Header, fileSize int64, limits native.Limits, progress func(phase string, done, total int)) (result native.PipelineReport, err error) {

@@ -316,6 +316,9 @@ internal sealed class MainForm : Form
             var label = root.GetProperty("label").GetString() ?? "";
             var done = root.GetProperty("done").GetInt32();
             var total = root.GetProperty("total").GetInt32();
+            var etaKnown = root.TryGetProperty("eta_known", out var etaFlag) && etaFlag.GetBoolean();
+            var etaSeconds = root.TryGetProperty("eta_seconds", out var etaValue) ? etaValue.GetInt32() : 0;
+            var rate = root.TryGetProperty("rate", out var rateValue) ? rateValue.GetDouble() : 0;
             if (!IsDisposed) BeginInvoke(() =>
             {
                 if (total > 0)
@@ -330,16 +333,32 @@ internal sealed class MainForm : Form
                     progress.Visible = true;
                     progress.Style = ProgressBarStyle.Marquee;
                 }
-                progressText.Text = total > 0
+                var count = total > 0
                     ? $"{T("Обработано", "Processed")}: {done} {T("из", "of")} {total}"
                     : $"{T("Обработано", "Processed")}: {done}";
+                var suffix = etaKnown
+                    ? $" · {T("осталось", "about")} {FormatDuration(etaSeconds)}"
+                    : rate > 0
+                        ? $" · {rate:0.0} {T("объектов/с", "items/s")}"
+                        : "";
+                progressText.Text = count + suffix;
             });
         }
         catch (JsonException) { }
     }
 
+    private string FormatDuration(int seconds)
+    {
+        if (seconds < 60) return $"{seconds} {T("с", "s")}";
+        var span = TimeSpan.FromSeconds(seconds);
+        return span.TotalHours >= 1
+            ? $"{(int)span.TotalHours}:{span.Minutes:00}:{span.Seconds:00}"
+            : $"{span.Minutes}:{span.Seconds:00}";
+    }
+
     private string FriendlyProgress(string value) => value switch
     {
+        "preparing export" => T("Подготовка оценки", "Preparing estimate"),
         "scanning recoverable messages" => T("Обнаружено сообщений", "Messages found"),
         "writing recovered messages" => T("Восстановлено сообщений", "Messages recovered"),
         "standard mailbox export" => T("Обработано сообщений", "Messages processed"),

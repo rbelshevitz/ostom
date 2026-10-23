@@ -243,11 +243,90 @@ func exportWithHeartbeatMode(filename, outputDir string, heartbeat func(), expec
 	if err != nil {
 		return r, err
 	}
+	if progress != nil && r.MessagesExpected > 0 {
+		progress(0, r.MessagesExpected)
+	}
 	visited := map[pst.Identifier]bool{root.Identifier: true}
 	if err := exportChildren(root, filepath.Join(outputDir, "Local Folders"), filepath.Join(outputDir, "OSTOM EML"), nil, &r, heartbeat, progress, visited, emlMode, item, skip); err != nil {
 		return r, err
 	}
 	return r, nil
+}
+
+// EstimateIndexedMessages reads only folder message tables. It does not
+// materialize messages, bodies, or attachments, so the estimate is much
+// cheaper than a second export pass. A total is reported only when every
+// traversed folder could be inspected; a partial total would make ETA worse
+// than showing an unknown total.
+const indexedEstimateBudget = 30 * time.Second
+
+func EstimateIndexedMessages(filename string, heartbeat func()) (int, bool, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return 0, false, err
+	}
+	defer file.Close()
+	db, err := pst.New(file)
+	if err != nil {
+		return 0, false, err
+	}
+	defer db.Cleanup()
+	root, err := db.GetRootFolder()
+	if err != nil {
+		return 0, false, err
+	}
+	total, known := estimateIndexedMessages(root, heartbeat)
+	return total, known, nil
+}
+
+func estimateIndexedMessages(root pst.Folder, heartbeat func()) (int, bool) {
+	visited := map[pst.Identifier]bool{root.Identifier: true}
+	total := 0
+	known := true
+	started := time.Now()
+	var visit func(pst.Folder) error
+	visit = func(parent pst.Folder) error {
+		children, err := parent.GetSubFolders()
+		if err != nil {
+			return err
+		}
+		for _, folder := range children {
+			if time.Since(started) >= indexedEstimateBudget {
+				known = false
+				return nil
+			}
+			if visited[folder.Identifier] {
+				continue
+			}
+			if len(visited) >= folderVisitLimit {
+				known = false
+				return nil
+			}
+			visited[folder.Identifier] = true
+			callHeartbeat(heartbeat)
+			if folder.Identifier.GetType() != pst.IdentifierTypeSearchFolder {
+				iter, iterErr := folder.GetMessageIterator()
+				if iterErr == nil {
+					size := iter.Size()
+					if size < 0 || total > int(^uint(0)>>1)-size {
+						known = false
+					} else {
+						total += size
+					}
+				} else if !errors.Is(iterErr, pst.ErrMessagesNotFound) {
+					known = false
+				}
+			}
+			if err := visit(folder); err != nil {
+				known = false
+			}
+		}
+		return nil
+	}
+	if err := visit(root); err != nil {
+		known = false
+	}
+	return total, known
 }
 
 func exportChildren(parent pst.Folder, root, emlRoot string, parentPath []string, r *Report, heartbeat func(), progress func(done, total int), visited map[pst.Identifier]bool, emlMode EMLMode, item func(MessageStatus), skip func(identity string) bool) error {
