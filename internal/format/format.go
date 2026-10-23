@@ -198,6 +198,15 @@ func CollectIndexedPayloadBlocks(name string, h Header, fileSize int64, bid uint
 	return blocks, result, err
 }
 
+func collectIndexedPayloadBlocksFromSource(source payloadSource, bid uint64, maxBlocks int, maxBytes uint64) ([][]byte, AssemblyResult, error) {
+	blocks := make([][]byte, 0)
+	result, err := streamPayloadFromSource(source, bid, maxBlocks, maxBytes, func(chunk []byte) error {
+		blocks = append(blocks, append([]byte(nil), chunk...))
+		return nil
+	})
+	return blocks, result, err
+}
+
 // IndexedPropertyContextResult is the bounded native PC result for one NBT
 // data BID. It is intentionally raw and does not claim that the node is a
 // message until higher-level NID/type and property rules confirm that.
@@ -318,6 +327,15 @@ func ParseIndexedPropertyContextWithSubnodes(name string, h Header, fileSize int
 // attachment collector asks to export them.
 func ParseIndexedPropertyContextWithSubnodePayloads(name string, h Header, fileSize int64, bid uint64, maxBlocks int, maxBytes uint64, maxRecords int, subnodes map[uint64]SubnodePayload) (IndexedPropertyContextResult, error) {
 	blocks, assembly, err := CollectIndexedPayloadBlocks(name, h, fileSize, bid, maxBlocks, maxBytes)
+	return parseIndexedPropertyContextFromBlocks(blocks, assembly, err, maxRecords, subnodes)
+}
+
+func parseIndexedPropertyContextFromSource(source payloadSource, bid uint64, maxBlocks int, maxBytes uint64, maxRecords int, subnodes map[uint64]SubnodePayload) (IndexedPropertyContextResult, error) {
+	blocks, assembly, err := collectIndexedPayloadBlocksFromSource(source, bid, maxBlocks, maxBytes)
+	return parseIndexedPropertyContextFromBlocks(blocks, assembly, err, maxRecords, subnodes)
+}
+
+func parseIndexedPropertyContextFromBlocks(blocks [][]byte, assembly AssemblyResult, err error, maxRecords int, subnodes map[uint64]SubnodePayload) (IndexedPropertyContextResult, error) {
 	result := IndexedPropertyContextResult{Assembly: assembly}
 	if err != nil {
 		return result, err
@@ -508,11 +526,6 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 		return CollectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir)
 	}
 	seen := make(map[uint64]bool)
-	folderPaths, hierarchy, folderErrors := collectIndexedFolderPaths(name, h, fileSize, nbt.nodeBIDs, maxBlocks, maxBytes, maxRecords, maxErrorSamples)
-	scan.Hierarchy = hierarchy
-	for _, folderErr := range folderErrors {
-		scan.addError(folderErr, maxErrorSamples)
-	}
 	indexFile, err := os.Open(name)
 	if err != nil {
 		_ = collector.Close()
@@ -520,6 +533,11 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 	}
 	defer indexFile.Close()
 	payloadSource := indexedPayloadSource{file: indexFile, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize, format: headerPSTFormat(h)}
+	folderPaths, hierarchy, folderErrors := collectIndexedFolderPaths(name, h, fileSize, nbt.nodeBIDs, maxBlocks, maxBytes, maxRecords, maxErrorSamples, payloadSource)
+	scan.Hierarchy = hierarchy
+	for _, folderErr := range folderErrors {
+		scan.addError(folderErr, maxErrorSamples)
+	}
 	total := 0
 	for _, node := range nbt.nodeBIDs {
 		if isMessageNID(node.nid) && node.dataBID != 0 && !seen[node.dataBID] {
@@ -578,7 +596,7 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 			}
 			nodeCleanup = nil
 		}
-		result, parseErr := ParseIndexedPropertyContextWithSubnodePayloads(name, h, fileSize, node.dataBID, maxBlocks, maxBytes, maxRecords, subnodes)
+		result, parseErr := parseIndexedPropertyContextFromSource(payloadSource, node.dataBID, maxBlocks, maxBytes, maxRecords, subnodes)
 		if parseErr != nil {
 			scan.addError(fmt.Errorf("NID 0x%X BID 0x%X: %w", node.nid, node.dataBID, parseErr), maxErrorSamples)
 			releaseNode()
@@ -599,7 +617,7 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 			if entry.DataBID == 0 {
 				continue
 			}
-			attachment, attachmentErr := ParseIndexedPropertyContextWithSubnodePayloads(name, h, fileSize, entry.DataBID, maxBlocks, maxBytes, maxRecords, subnodes)
+			attachment, attachmentErr := parseIndexedPropertyContextFromSource(payloadSource, entry.DataBID, maxBlocks, maxBytes, maxRecords, subnodes)
 			if attachmentErr != nil || !hasAttachmentProperties(attachment.Properties) {
 				continue
 			}
@@ -622,6 +640,11 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 			}
 		}
 		releaseNode()
+		if _, _, _, collectorLimit := collector.Stats(); collectorLimit {
+			scan.LimitReached = true
+			appendLimitReason(&scan.LimitReasons, "message_limit")
+			break
+		}
 	}
 	if consumer == nil {
 		scan.Messages = collector.Messages()
@@ -771,7 +794,7 @@ type folderInfo struct {
 	name   string
 }
 
-func collectIndexedFolderPaths(name string, h Header, fileSize int64, nodes []nodeRef, maxBlocks int, maxBytes uint64, maxRecords, maxDiagnostics int) (map[uint64][]string, HierarchyConsistency, []error) {
+func collectIndexedFolderPaths(name string, h Header, fileSize int64, nodes []nodeRef, maxBlocks int, maxBytes uint64, maxRecords, maxDiagnostics int, source indexedPayloadSource) (map[uint64][]string, HierarchyConsistency, []error) {
 	folders := make(map[uint64]folderInfo)
 	hierarchyFolders := make(map[uint64]HierarchyFolder)
 	hierarchyRows := make([]HierarchyTableRow, 0)
@@ -782,7 +805,7 @@ func collectIndexedFolderPaths(name string, h Header, fileSize int64, nodes []no
 			continue
 		}
 		seen[node.dataBID] = true
-		result, err := ParseIndexedPropertyContextWithSubnodes(name, h, fileSize, node.dataBID, maxBlocks, maxBytes, maxRecords, nil)
+		result, err := parseIndexedPropertyContextFromSource(source, node.dataBID, maxBlocks, maxBytes, maxRecords, nil)
 		if err != nil {
 			appendBoundedError(&errors, fmt.Errorf("folder NID 0x%X: %w", node.nid, err), maxDiagnostics)
 			continue
@@ -800,11 +823,12 @@ func collectIndexedFolderPaths(name string, h Header, fileSize int64, nodes []no
 		folders[node.nid] = folderInfo{parent: node.parentNID, name: folderName}
 		hierarchyFolders[node.nid] = HierarchyFolder{ParentNID: node.parentNID, DisplayName: folderName}
 		if node.subnodeBID != 0 {
-			payloads, _, subnodeErr := CollectIndexedSubnodePayloads(name, h, fileSize, node.subnodeBID, maxBlocks, maxBytes)
+			entries, _, subnodeErr := walkSubnodeTreeFromSourceWithPageSize(source, node.subnodeBID, maxBlocks, h.PageSize)
 			if subnodeErr != nil {
 				appendBoundedError(&errors, fmt.Errorf("folder NID 0x%X hierarchy subnodes: %w", node.nid, subnodeErr), maxDiagnostics)
 				continue
 			}
+			payloads := collectSubnodePayloadsFromSource(source, entries, maxBlocks, maxBytes)
 			rows, rowErrors := collectHierarchyRows(payloads, node.nid, maxRecords)
 			for _, rowErr := range rowErrors {
 				appendBoundedError(&errors, fmt.Errorf("folder NID 0x%X hierarchy table: %w", node.nid, rowErr), maxDiagnostics)
@@ -2016,7 +2040,7 @@ func (c *RecoveredMessageCollector) Stats() (added, rejected, duplicates int, li
 	if c == nil {
 		return 0, 0, 0, false
 	}
-	return c.added, c.rejected, c.duplicates, c.limited
+	return c.added, c.rejected, c.duplicates, c.limited || c.added >= c.maxMessages
 }
 
 func decodePropertyText(value PropertyValue) string {

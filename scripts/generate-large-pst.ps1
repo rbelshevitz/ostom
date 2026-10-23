@@ -2,9 +2,12 @@
 param(
     [ValidateRange(1, 4096)]
     [int]$SizeMb = 100,
+    [ValidateRange(1, 1440)]
+    [int]$SmokeTimeoutMinutes = 10,
     [string]$OutputPath = "",
     [string]$WorkDirectory = "",
-    [switch]$Force
+    [switch]$Force,
+    [switch]$SkipSmoke
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,16 +67,58 @@ try {
         throw "Generated PST is too small: $size bytes"
     }
 
+    if ($SkipSmoke) {
+        Write-Host "Generated without smoke: $OutputPath ($size bytes)"
+        return
+    }
+
     Write-Host "Checking the generated PST with OSTOM..."
     $oldFixture = $env:OSTOM_LARGE_PST
+    $oldHeartbeat = $env:OSTOM_LARGE_PST_SMOKE_HEARTBEAT
+    $smokeStdout = Join-Path $workRoot 'ostom-large-smoke.stdout.log'
+    $smokeStderr = Join-Path $workRoot 'ostom-large-smoke.stderr.log'
+    $smokeHeartbeat = Join-Path $workRoot 'ostom-large-smoke.heartbeat.log'
     try {
         $env:OSTOM_LARGE_PST = $OutputPath
-        go test -trimpath ./cmd/ostom-fixture -run TestLargePSTRecoverySmoke -count=1
-        if ($LASTEXITCODE -ne 0) {
-            throw "OSTOM large-PST test exited with code $LASTEXITCODE"
+        $env:OSTOM_LARGE_PST_SMOKE_HEARTBEAT = $smokeHeartbeat
+        $smoke = Start-Process -FilePath 'go' -ArgumentList @(
+            'test', '-trimpath', './cmd/ostom-fixture',
+            '-run', 'TestLargePSTRecoverySmoke', '-count=1'
+        ) -WorkingDirectory $repoRoot -RedirectStandardOutput $smokeStdout -RedirectStandardError $smokeStderr -PassThru
+        $timeoutMs = [int64]$SmokeTimeoutMinutes * 60 * 1000
+        if (-not $smoke.WaitForExit($timeoutMs)) {
+            Write-Host "OSTOM large-PST smoke exceeded ${SmokeTimeoutMinutes} minute(s); stopping process tree..."
+            & taskkill.exe /PID $smoke.Id /T /F | Out-Null
+            if (Test-Path -LiteralPath $smokeStdout) {
+                Write-Host 'OSTOM large-PST smoke stdout:'
+                Get-Content -LiteralPath $smokeStdout
+            }
+            if (Test-Path -LiteralPath $smokeStderr) {
+                Write-Host 'OSTOM large-PST smoke stderr:'
+                Get-Content -LiteralPath $smokeStderr
+            }
+            if (Test-Path -LiteralPath $smokeHeartbeat) {
+                Write-Host 'OSTOM large-PST smoke heartbeat:'
+                Get-Content -LiteralPath $smokeHeartbeat
+            }
+            throw "OSTOM large-PST smoke timed out after $SmokeTimeoutMinutes minute(s)"
+        }
+        if (Test-Path -LiteralPath $smokeStdout) {
+            Get-Content -LiteralPath $smokeStdout
+        }
+        if (Test-Path -LiteralPath $smokeStderr) {
+            Get-Content -LiteralPath $smokeStderr
+        }
+        if (Test-Path -LiteralPath $smokeHeartbeat) {
+            Write-Host 'OSTOM large-PST smoke heartbeat:'
+            Get-Content -LiteralPath $smokeHeartbeat
+        }
+        if ($smoke.ExitCode -ne 0) {
+            throw "OSTOM large-PST test exited with code $($smoke.ExitCode)"
         }
     } finally {
         $env:OSTOM_LARGE_PST = $oldFixture
+        $env:OSTOM_LARGE_PST_SMOKE_HEARTBEAT = $oldHeartbeat
     }
 
     Write-Host "Generated and verified: $OutputPath ($size bytes)"

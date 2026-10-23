@@ -74,11 +74,40 @@ explicitly recorded evidence gaps.
 
 PST/OST generation remains outside the Go runtime.
 
+### 5. Prepare release dependency notices
+
+- [ ] Build a reproducible generator from `go list -m -json all` and
+  `go mod download` that copies upstream `LICENSE`/`COPYING`/`NOTICE` texts
+  and emits a versioned dependency report.
+- [ ] Keep modules with missing or ambiguous license files in an explicit
+  `REVIEW_REQUIRED` list; do not infer or rewrite their license terms.
+- [ ] Run the audit before the first public binary/source release and whenever
+  `go.mod` or `go.sum` changes.
+
+Done means a release carries complete, source-derived attribution without a
+handwritten claim that the dependency graph is fully licensed.
+
+### 6. Prepare the next release
+
+- [ ] Review and commit the indexed collector optimization, smoke watchdog,
+  heartbeat logging, and focused regression test.
+- [ ] Run the full Go suite and the 1-GiB generated-PST acceptance smoke; record
+  the observed result without claiming that 32-message smoke covers a full
+  mailbox export.
+- [ ] Build the matching `ostom.exe` and WinForms GUI release artifacts.
+- [ ] Verify the release archive contains only runtime files, licenses, and
+  release documentation; keep development skills and smoke checklists in the
+  source repository, not in the user-facing package.
+- [ ] Generate SHA-256 checksums and update the changelog/release notes with
+  the indexed-path performance fix and its measured scope.
+
 ### Completed foundation
 
 - [x] Add a separate salvage path for missing or damaged indexes.
 - [x] Make folder, message, and attachment damage independently visible, with
   stable exit codes and a quick scan that skips attachment payloads.
+- [x] Record confirmed OSTOM recovery, watchdog, progress JSON, and verification
+  rules in `.codex/skills/ostom-recovery-engineering/SKILL.md`.
 
 ### Current implementation checkpoint
 
@@ -233,8 +262,9 @@ truncated.
   168 attachments, 0 partial messages, and 0 attachment failures.
 - [x] Add deterministic ETA/count-worker tests and localize progress-rate units
   in the GUI for Russian and English regions.
-- [ ] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
-  work, failed export, partial recovery, and successful export.
+- [x] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
+  work, failed export, partial recovery, and successful export; see
+  `gui/GUI-SMOKE.md`.
 
 ## Current baseline
 
@@ -272,6 +302,11 @@ truncated.
 - [x] Record the external builder workflow: download the pinned source, run the
   `PstBuilder.LargeTest` sample with `dotnet run`, generate the PST, and run
   `TestLargePSTRecoverySmoke`.
+- [ ] Add bounded timeout and visible phase progress to the large-PST smoke;
+  a 1-GiB run showed that the structural scan can be long and currently has no
+  external watchdog.
+- [ ] Verify the SHA-256 of the pinned PST-Builder archive before extraction and
+  execution; fail closed on a mismatch and document the expected digest.
 - [ ] Do not implement a PST writer in Go as part of OSTOM. The existing Go
   writer dependency is not a reliable generator; PST creation is a separate
   tool concern and must not block OST recovery work.

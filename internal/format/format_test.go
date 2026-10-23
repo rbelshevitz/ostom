@@ -79,6 +79,24 @@ func TestRecoveredCollectorTakeReleasesMessage(t *testing.T) {
 	}
 }
 
+func TestRecoveredCollectorReportsMessageLimitWhenFull(t *testing.T) {
+	collector, err := NewRecoveredMessageCollector(1, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collector.Close()
+	added, err := collector.AddResolvedProperties(0x44, 0x100, []PropertyValue{
+		{PropID: 0x001A, PropType: 0x001E, Data: []byte("IPM.Note\x00")},
+	})
+	if err != nil || !added {
+		t.Fatalf("add message: added=%v err=%v", added, err)
+	}
+	addedCount, _, _, limited := collector.Stats()
+	if addedCount != 1 || !limited {
+		t.Fatalf("collector limit = (%d, %v), want (1, true)", addedCount, limited)
+	}
+}
+
 func TestRecoveredCollectorCloseReleasesRetainedMessages(t *testing.T) {
 	collector, err := NewRecoveredMessageCollector(2, 1024)
 	if err != nil {
