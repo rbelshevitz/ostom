@@ -34,7 +34,7 @@ output/
 │   │   ├── 2022
 │   │   └── 2023
 │   └── Archive
-└── report.json
+└── ostom-report.json
 ```
 
 Each mailbox is a file with no extension. A folder that has children has both:
@@ -82,7 +82,7 @@ rules.
 ## Safety rules
 
 - Copy output; do not move the only export.
-- Keep `report.json` next to the export.
+- Keep `ostom-report.json` next to the export.
 - Do not copy `.msf` files from an old profile.
 - Do not import into IMAP until the local export has been verified.
 - Preserve the original OST and the OSTOM report.

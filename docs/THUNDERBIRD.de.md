@@ -35,7 +35,7 @@ output/
 │   │   ├── 2022
 │   │   └── 2023
 │   └── Archive
-└── report.json
+└── ostom-report.json
 ```
 
 Jedes Postfach ist eine Datei ohne Erweiterung. Ein Ordner mit Unterordnern
@@ -88,7 +88,7 @@ Größenlimits für Anhänge und die Regeln des Servers für Ordnernamen.
 ## Sicherheitsregeln
 
 - Kopieren Sie das Ergebnis; verschieben Sie nicht die einzige Exportkopie.
-- Bewahren Sie `report.json` neben dem Export auf.
+- Bewahren Sie `ostom-report.json` neben dem Export auf.
 - Kopieren Sie keine `.msf`-Dateien aus einem alten Profil.
 - Importieren Sie erst in IMAP, nachdem Sie den lokalen Export geprüft haben.
 - Bewahren Sie die ursprüngliche OST-Datei und den OSTOM-Bericht auf.

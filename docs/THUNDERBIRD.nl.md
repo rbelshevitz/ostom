@@ -34,7 +34,7 @@ output/
 │   │   ├── 2022
 │   │   └── 2023
 │   └── Archive
-└── report.json
+└── ostom-report.json
 ```
 
 Elke mailbox is een bestand zonder extensie. Een map met submappen bestaat uit beide volgende onderdelen:
@@ -86,7 +86,7 @@ de grootte van bijlagen en de regels van de server voor mapnamen.
 ## Veiligheidsregels
 
 - Kopieer het resultaat; verplaats niet de enige export.
-- Bewaar `report.json` naast de export.
+- Bewaar `ostom-report.json` naast de export.
 - Kopieer geen `.msf`-bestanden uit een oud profiel.
 - Importeer pas naar IMAP nadat u de lokale export hebt gecontroleerd.
 - Bewaar het oorspronkelijke OST-bestand en het OSTOM-rapport.

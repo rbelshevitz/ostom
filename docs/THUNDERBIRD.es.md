@@ -35,7 +35,7 @@ output/
 │   │   ├── 2022
 │   │   └── 2023
 │   └── Archive
-└── report.json
+└── ostom-report.json
 ```
 
 Cada buzón es un archivo sin extensión. Una carpeta con subcarpetas tiene ambos:
@@ -88,7 +88,7 @@ de las carpetas.
 ## Reglas de seguridad
 
 - Copie el resultado; no mueva la única exportación.
-- Conserve `report.json` junto a la exportación.
+- Conserve `ostom-report.json` junto a la exportación.
 - No copie archivos `.msf` de un perfil antiguo.
 - No importe en IMAP hasta haber verificado la exportación local.
 - Conserve el OST original y el informe de OSTOM.

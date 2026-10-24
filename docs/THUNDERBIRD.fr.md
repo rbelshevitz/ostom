@@ -35,7 +35,7 @@ output/
 │   │   ├── 2022
 │   │   └── 2023
 │   └── Archive
-└── report.json
+└── ostom-report.json
 ```
 
 Chaque boîte aux lettres est un fichier sans extension. Un dossier qui contient
@@ -89,7 +89,7 @@ noms de dossiers.
 ## Règles de sécurité
 
 - Copiez le résultat ; ne déplacez pas l’unique export.
-- Conservez `report.json` à côté de l’export.
+- Conservez `ostom-report.json` à côté de l’export.
 - Ne copiez pas les fichiers `.msf` d’un ancien profil.
 - N’importez pas dans IMAP avant d’avoir vérifié l’export local.
 - Conservez l’OST original et le rapport OSTOM.
