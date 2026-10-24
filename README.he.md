@@ -20,7 +20,7 @@ OST/PST ניתן לקריאה רק בחלקו, הוא מעתיק את ההודע
 קובצי PST/OST. ההודעות והקבצים המצורפים נשמרים בפורמטי ייצוא פתוחים.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="רואת חשבון שמחה על הדואר ששוחזר"
        width="900">
 </p>

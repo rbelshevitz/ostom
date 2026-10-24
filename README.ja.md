@@ -21,7 +21,7 @@ mbox フォルダー構造へコピーし、破損した部分をレポートに
 オープンなエクスポート形式で保存します。
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="復元したメールを見て喜ぶ経理担当者"
        width="900">
 </p>

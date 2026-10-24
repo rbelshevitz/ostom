@@ -21,7 +21,7 @@ répare pas et ne reconstruit pas les fichiers PST/OST. Les messages et les
 pièces jointes récupérés sont enregistrés dans des formats d’export ouverts.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="Une comptable se réjouit du courrier récupéré"
        width="900">
 </p>

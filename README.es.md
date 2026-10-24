@@ -21,7 +21,7 @@ No repara ni reconstruye archivos PST/OST. Guarda los mensajes y archivos
 adjuntos recuperados en formatos de exportación abiertos.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="Una contable celebra el correo recuperado"
        width="900">
 </p>

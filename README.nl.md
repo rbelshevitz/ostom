@@ -21,7 +21,7 @@ repareert en reconstrueert geen PST/OST-bestanden. Herstelde berichten en bijlag
 worden opgeslagen in open exportformaten.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="Een boekhouder viert herstelde e-mail"
        width="900">
 </p>

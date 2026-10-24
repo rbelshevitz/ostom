@@ -23,7 +23,7 @@ OSTOM полезен, когда файл Outlook читается только 
 открытые форматы экспорта.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="Бухгалтерша радуется восстановленной почте"
        width="900">
 </p>

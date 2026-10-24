@@ -21,7 +21,7 @@ In short, OSTOM is a local recovery tool with an honest report. Writing a new
 attachments in open export formats instead.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="Happy accountant celebrating recovered email"
        width="900">
 </p>

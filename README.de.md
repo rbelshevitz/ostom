@@ -22,7 +22,7 @@ Bericht. Es repariert und rekonstruiert keine PST/OST-Dateien. Wiederhergestellt
 Nachrichten und Anhänge werden in offenen Exportformaten gespeichert.
 
 <p align="center">
-  <img src="docs/accountant-recovered-mail.png"
+  <img src="docs/recovered-mail.png"
        alt="Eine Buchhalterin freut sich über wiederhergestellte E-Mails"
        width="900">
 </p>
