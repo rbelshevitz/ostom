@@ -137,7 +137,7 @@ func TestExportStreamsLazyLargeAttachment(t *testing.T) {
 	if attachment.Kind != "attachment" || attachment.ReadableBytes != int64(len(payload)) || attachment.SHA256 != fmt.Sprintf("%x", sum[:]) || attachment.ExportedBytes != int64(len(payload)) {
 		t.Fatalf("lazy attachment was not streamed and accounted: %+v", attachment)
 	}
-	eml, err := os.ReadFile(filepath.Join(root, "OSTOM Native Recovered EML", "0000000000000202.eml"))
+	eml, err := os.ReadFile(filepath.Join(root, "OSTOM Native Recovered EML", "Unfiled", "0000000000000202.eml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestExportRecoveredMessages(t *testing.T) {
 			t.Fatalf("native mbox missing %q: %s", want, text)
 		}
 	}
-	eml, err := os.ReadFile(filepath.Join(root, "OSTOM Native Recovered EML", "0000000000000200.eml"))
+	eml, err := os.ReadFile(filepath.Join(root, "OSTOM Native Recovered EML", "Unfiled", "0000000000000200.eml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestExportRecoveredMessages(t *testing.T) {
 
 func TestExportUsesRecoveredFolderPath(t *testing.T) {
 	root := t.TempDir()
-	_, err := Export(root, []format.RecoveredMessage{{
+	report, err := Export(root, []format.RecoveredMessage{{
 		BID: 0x201, Subject: "Foldered", Body: []byte("body"), FolderPath: []string{"Inbox", "Archive"},
 	}})
 	if err != nil {
@@ -209,6 +209,13 @@ func TestExportUsesRecoveredFolderPath(t *testing.T) {
 	path := filepath.Join(root, "OSTOM Native Recovered.sbd", "Inbox.sbd", "Archive")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("folder-preserving mbox missing: %v", err)
+	}
+	emlPath := filepath.Join(root, "OSTOM Native Recovered EML", "Inbox", "Archive", "0000000000000201.eml")
+	if _, err := os.Stat(emlPath); err != nil {
+		t.Fatalf("folder-preserving EML missing: %v", err)
+	}
+	if got := report.ManifestRecords[0].OutputPath; !strings.HasSuffix(got, filepath.Join("OSTOM Native Recovered EML", "Inbox", "Archive", "0000000000000201.eml")) {
+		t.Fatalf("manifest EML path = %q", got)
 	}
 }
 

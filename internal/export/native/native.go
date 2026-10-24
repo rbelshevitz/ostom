@@ -762,7 +762,7 @@ func ExportWithProgressMode(root string, messages []format.RecoveredMessage, pro
 			continue
 		}
 		var checksum string
-		emlPath, exportedBytes, writeErr := writeEML(root, message.BID, func(out io.Writer) error {
+		emlPath, exportedBytes, writeErr := writeEML(root, message.FolderPath, message.BID, func(out io.Writer) error {
 			digest := sha256.New()
 			hashWriter := io.MultiWriter(out, digest)
 			err := writer.WriteEMLWithSource(
@@ -813,8 +813,15 @@ func ExportWithProgressMode(root string, messages []format.RecoveredMessage, pro
 	return report, nil
 }
 
-func writeEML(root string, bid uint64, write func(io.Writer) error) (string, int64, error) {
+func writeEML(root string, folderPath []string, bid uint64, write func(io.Writer) error) (string, int64, error) {
 	dir := filepath.Join(root, "OSTOM Native Recovered EML")
+	if len(folderPath) == 0 {
+		dir = filepath.Join(dir, "Unfiled")
+	} else {
+		for _, part := range folderPath {
+			dir = filepath.Join(dir, nativeSafeName(part))
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", 0, err
 	}
@@ -856,6 +863,25 @@ func writeEML(root string, bid uint64, write func(io.Writer) error) (string, int
 	return path, info.Size(), nil
 }
 
+func nativeSafeName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "Unnamed"
+	}
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
+			return '_'
+		default:
+			return r
+		}
+	}, value)
+	if value == "." || value == ".." {
+		return "_"
+	}
+	return value
+}
+
 func appendExportError(report *Report, bid uint64, action string, err error) {
 	if len(report.Errors) < 32 {
 		report.Errors = append(report.Errors, fmt.Sprintf("BID 0x%X %s: %v", bid, action, err))
@@ -867,7 +893,7 @@ func recordNativeManifest(report *Report, root string, message format.RecoveredM
 	messageErrors = append(messageErrors, errors...)
 	outputPath := ""
 	if emlPath != "" {
-		outputPath = filepath.Join(filepath.Base(root), "OSTOM Native Recovered EML", filepath.Base(emlPath))
+		outputPath = nativeEMLManifestPath(root, emlPath)
 	}
 	report.ManifestRecords = append(report.ManifestRecords, manifest.Record{
 		Kind: "message", Source: "native", Identity: fmt.Sprintf("native-bid-%016X", message.BID), Route: "native-recovered", MessageID: message.MessageID,
@@ -906,7 +932,7 @@ func recordNativeManifest(report *Report, root string, message format.RecoveredM
 		outputPath := ""
 		if emlPath != "" && readableBytes > 0 && attachmentStatus != "unavailable" {
 			exportedBytes = readableBytes
-			outputPath = filepath.Join(filepath.Base(root), "OSTOM Native Recovered EML", filepath.Base(emlPath))
+			outputPath = nativeEMLManifestPath(root, emlPath)
 		}
 		recordErrors := append([]string(nil), attachment.Errors...)
 		report.ManifestRecords = append(report.ManifestRecords, manifest.Record{
@@ -916,4 +942,13 @@ func recordNativeManifest(report *Report, root string, message format.RecoveredM
 			SHA256: checksum, OutputPath: outputPath, Errors: recordErrors,
 		})
 	}
+}
+
+func nativeEMLManifestPath(root, emlPath string) string {
+	emlRoot := filepath.Join(root, "OSTOM Native Recovered EML")
+	relative, err := filepath.Rel(emlRoot, emlPath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return ""
+	}
+	return filepath.Join(filepath.Base(root), "OSTOM Native Recovered EML", relative)
 }

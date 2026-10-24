@@ -197,6 +197,12 @@ during a chain still need broader fixtures and independent validation. A larger
 `PidTagAttachSize` is not by itself an incomplete attachment because the
 property describes the attachment object, not only the binary data stream.
 
+When `-eml` is enabled, indexed EML files follow the recovered folder tree.
+Native EML files remain under `OSTOM Native Recovered EML` and use the recovered
+`FolderPath`; messages without a reliable folder are placed under `Unfiled`.
+The two exporter trees are kept separate, and the recovery manifest records the
+relative EML path.
+
 The independent [libpff attachment notes](https://github.com/libyal/libpff/blob/main/documentation/Personal%20Folder%20File%20(PFF)%20format.asciidoc#1251-the-attachments-sub-item)
 also document real-world cases where attachment size and the `0x3701` value do
 not line up, including data stored in another property or in a split attached

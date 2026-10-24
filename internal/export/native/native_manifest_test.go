@@ -1,6 +1,7 @@
 package native
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,7 +18,8 @@ func TestRecordNativeManifestIncludesAttachmentEvidence(t *testing.T) {
 		}},
 	}
 	var report Report
-	recordNativeManifest(&report, root, message, "recovered", "0000000000000042.eml", 100, "message-checksum", nil)
+	emlPath := filepath.Join(root, "OSTOM Native Recovered EML", "Inbox", "0000000000000042.eml")
+	recordNativeManifest(&report, root, message, "recovered", emlPath, 100, "message-checksum", nil)
 	if len(report.ManifestRecords) != 2 {
 		t.Fatalf("manifest records = %d, want 2", len(report.ManifestRecords))
 	}

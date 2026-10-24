@@ -70,7 +70,7 @@ Sie den separaten Wiederherstellungsprozess:
 
 Schließen Sie Thunderbird, kopieren Sie den erstellten Ordner `Local Folders`
 in Ihr Profil und prüfen Sie die wiederhergestellten Nachrichten und Anhänge,
-bevor Sie sie weiterverwenden. Der [Leitfaden zum Import in Thunderbird](docs/THUNDERBIRD.md)
+bevor Sie sie weiterverwenden. Der [Leitfaden zum Import in Thunderbird](docs/THUNDERBIRD.de.md)
 beschreibt den vollständigen Ablauf: zuerst lokal, dann im IMAP-Konto.
 
 ## Optionen
