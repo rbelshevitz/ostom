@@ -30,8 +30,12 @@ go test -trimpath ./internal/format -run 'TestExternal4K.*Smoke'
 The separate `testdata/fixtures/fifty.ost` file is the local long-run
 acceptance corpus. It is also ignored and is not the downloaded GroupDocs
 sample above. Use it only for local development and acceptance testing; do not
-commit, publish, or include it in release or CI artifacts. The known-good
-baseline is:
+commit, publish, or include it in release or CI artifacts.
+
+Generated locally from the [go-pst project](https://github.com/useti/go-pst)
+for test purposes; it is not an original Outlook OST.
+
+The known-good baseline is:
 
 - file: `testdata/fixtures/fifty.ost`
 - size: `28967936` bytes
