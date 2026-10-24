@@ -42,8 +42,9 @@ auf.
 
 Der zentrale Gedanke ist einfach: Öffnen Sie das Ergebnis von OSTOM in
 Thunderbird und ordnen Sie die Nachrichten dort in IMAP-Ordner ein. Laden Sie
-den Export zuerst in den lokalen Thunderbird-Ordner `Local Folders` und prüfen
-Sie ihn. Erstellen Sie danach die benötigten IMAP-Ordner und kopieren oder
+den Export zuerst in den Thunderbird-Bereich „Lokale Ordner“ und prüfen Sie ihn.
+Im Profil heißt dieser Ordner auf der Festplatte `Local Folders`. Erstellen Sie
+danach die benötigten IMAP-Ordner und kopieren oder
 verschieben Sie die Nachrichten dorthin. OSTOM stellt lesbare Daten wieder her;
 Thunderbird zeigt sie an und kann sie auf den Server hochladen. OSTOM verbindet
 sich nicht mit IMAP und verändert die PST/OST-Quelldatei nicht.
@@ -122,7 +123,7 @@ go test -trimpath ./...
 ```
 
 - [Details zu Format und Wiederherstellung](docs/FORMAT.md) (Englisch)
-- [Import in Thunderbird](docs/THUNDERBIRD.md) (Englisch)
+- [Import in Thunderbird](docs/THUNDERBIRD.de.md)
 - [Entwicklungsplan](docs/TODO.md) (Englisch)
 - [Hinweise zu Drittanbieterkomponenten](docs/THIRD_PARTY_NOTICES.md) (Englisch)
 

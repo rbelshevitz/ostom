@@ -41,7 +41,8 @@ Travaillez sur une copie du fichier et conservez l’original intact.
 
 L’idée principale est simple : ouvrez le résultat d’OSTOM dans Thunderbird,
 puis organisez les messages dans des dossiers IMAP. Commencez par charger
-l’export dans le dossier local `Local Folders` de Thunderbird et vérifiez-le.
+l’export dans le dossier local « Dossiers locaux » de Thunderbird et vérifiez-le.
+Dans le profil, ce dossier apparaît sur le disque sous le nom `Local Folders`.
 Créez ensuite les dossiers IMAP nécessaires et copiez-y ou déplacez-y les
 messages. OSTOM récupère les données lisibles ; Thunderbird les affiche et peut
 les charger sur le serveur. OSTOM ne se connecte pas à IMAP et ne modifie jamais
@@ -68,7 +69,7 @@ procédure de récupération séparée :
 
 Fermez Thunderbird, copiez le dossier `Local Folders` créé dans son profil et
 vérifiez les messages et les pièces jointes récupérés avant de les utiliser.
-Consultez le [guide d’importation dans Thunderbird](docs/THUNDERBIRD.md) pour
+Consultez le [guide d’importation dans Thunderbird](docs/THUNDERBIRD.fr.md) pour
 le flux complet : d’abord en local, puis dans IMAP.
 
 ## Options
@@ -121,7 +122,7 @@ go test -trimpath ./...
 ```
 
 - [Détails du format et de la récupération](docs/FORMAT.md) (anglais)
-- [Importation dans Thunderbird](docs/THUNDERBIRD.md) (anglais)
+- [Importation dans Thunderbird](docs/THUNDERBIRD.fr.md)
 - [Plan de développement](docs/TODO.md) (anglais)
 - [Avis concernant les composants tiers](docs/THIRD_PARTY_NOTICES.md) (anglais)
 

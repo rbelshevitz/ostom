@@ -18,6 +18,10 @@ folder for every message.
 Check the local copy first. Starting with IMAP can synchronize a mistaken move,
 run into server quotas, or make the result harder to find during a sync error.
 
+In the Thunderbird interface, this area may have a localized name. The profile
+directory on disk is normally named `Local Folders`; use that filesystem name
+when copying the export manually.
+
 OSTOM exports Thunderbird Local Folders in the standard mbox layout:
 
 ```text

@@ -63,7 +63,7 @@ OST/PST ניתן לקריאה רק בחלקו, הוא מעתיק את ההודע
 
 סגרו את Thunderbird, העתיקו את תיקיית `Local Folders` שנוצרה אל הפרופיל שלו
 ובדקו את ההודעות ואת הקבצים המצורפים. לפרטים על התהליך המלא — קודם תיקיות
-מקומיות ואחר כך IMAP — עיינו ב[מדריך הייבוא ל-Thunderbird](docs/THUNDERBIRD.md).
+מקומיות ואחר כך IMAP — עיינו ב[מדריך הייבוא ל-Thunderbird](docs/THUNDERBIRD.he.md).
 
 ## אפשרויות
 
@@ -110,7 +110,7 @@ go test -trimpath ./...
 ```
 
 - [פרטי הפורמט והשחזור](docs/FORMAT.md) (אנגלית)
-- [ייבוא ל-Thunderbird](docs/THUNDERBIRD.md) (אנגלית)
+- [ייבוא ל-Thunderbird](docs/THUNDERBIRD.he.md)
 - [תוכנית הפיתוח](docs/TODO.md) (אנגלית)
 - [הודעות על רישיונות רכיבי צד שלישי](docs/THIRD_PARTY_NOTICES.md) (אנגלית)
 
