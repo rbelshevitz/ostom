@@ -12,9 +12,15 @@ copyright- и license-уведомления.
 
 ## github.com/useti/go-pst/v6 v6.0.8
 
-Лицензия Apache 2.0.
+Лицензия Apache 2.0. Сопровождается командой USETI.
 
 Исходный код и лицензия: <https://github.com/useti/go-pst>
+
+## golang.org/x/sys v0.34.0
+
+Лицензия BSD 3-Clause. Copyright (c) 2009 The Go Authors.
+
+Исходный код и лицензия: <https://github.com/golang/sys>
 
 ## Остальные Go-модули
 

@@ -12,9 +12,15 @@ Source and license: <https://github.com/grokify/outlook-pst-go>
 
 ## github.com/useti/go-pst/v6 v6.0.8
 
-Apache License 2.0.
+Apache License 2.0. Maintained by the USETI team.
 
 Source and license: <https://github.com/useti/go-pst>
+
+## golang.org/x/sys v0.34.0
+
+BSD 3-Clause License. Copyright (c) 2009 The Go Authors.
+
+Source and license: <https://github.com/golang/sys>
 
 ## Other Go modules
 
