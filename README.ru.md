@@ -1,5 +1,7 @@
 # OSTOM
 
+> Иногда вся почта Outlook — тяжёлый груз.
+
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
@@ -35,6 +37,13 @@ OSTOM полезен, когда файл Outlook читается только 
 
 Работайте с копией файла и сохраняйте оригинал.
 
+Главное: результат OSTOM можно открыть в Thunderbird, а потом разложить письма
+по папкам IMAP. Сначала загрузите экспорт в локальную область Thunderbird
+(`Local Folders`) и проверьте его. Затем создайте нужные папки в IMAP и
+скопируйте или переместите туда письма. OSTOM сохраняет найденные данные,
+Thunderbird показывает их и загружает на сервер. Сам OSTOM к IMAP не
+подключается и исходный PST/OST не меняет.
+
 Проверить структуру и сохранить JSON-отчёт:
 
 ```powershell
@@ -54,7 +63,8 @@ OSTOM полезен, когда файл Outlook читается только 
 ```
 
 Закройте Thunderbird, скопируйте созданную папку `Local Folders` в его профиль
-и проверьте письма и вложения перед дальнейшим использованием.
+и проверьте письма и вложения. Подробнее о загрузке в локальные папки, а затем
+в IMAP — в [инструкции по Thunderbird](docs/THUNDERBIRD.ru.md).
 
 ## Параметры
 

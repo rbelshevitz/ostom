@@ -10,6 +10,26 @@ rebuilding an Outlook data file.
 
 The primary recovery target is local-only content. OSTOM must inspect and export every physically present folder and item, including Sent, Drafts, Outbox, Conflicts, hidden, custom, and “This computer only” folders. It must not assume that an IMAP/Exchange server contains the complete copy or that a folder name identifies its synchronization status.
 
+## Which PST/OST variant is this: era, encoding, and page size
+
+The `.pst` or `.ost` extension does not identify the internal format by itself.
+Here is a practical compatibility guide:
+
+| Variant | Practical era | Reading implications |
+|---|---|---|
+| ANSI / legacy PFF | Outlook 97–2002 (Office XP and earlier) | 32-bit identifiers, usually 512-byte pages, code-page strings, and a historical file limit around 2 GiB. |
+| Unicode PFF | Outlook 2003 and later: 2003/2007, 2010/2013, 2016/2019/2021, and Microsoft 365 | Unicode strings and 64-bit addressing; this does not automatically mean 4 KiB pages. Outlook 2003/2007 commonly use a 20 GiB limit; Outlook 2010+ commonly has a 50 GiB upper limit, while Microsoft's older documentation gives an approximately 25 GiB Unicode default. Policy and settings can change it. |
+| Unicode with 4 KiB pages and compressed blocks | Found among newer OST/PST files, but not a reliable marker for one Outlook release | Read the header, NBT/BBT, and block metadata; do not call a file corrupt merely because a parser expected 512-byte pages. |
+
+These are broad guidelines, not a compatibility guarantee for every file. An
+OST can depend on Exchange, the profile type, and how it was created; a PST may
+have been moved between Outlook versions. OSTOM therefore identifies the
+variant from the header and file structure, not just the name, extension, or
+Outlook release year. `Unicode` describes string/PFF encoding, while `4 KiB`
+describes page and block layout; they are separate properties. Size limits come
+from the format or Outlook settings and do not guarantee that a damaged file
+can be read to the end.
+
 OST and PST use the Microsoft PFF/OFF family. The low-level NDB layer contains:
 
 - the NDB header and allocation metadata;

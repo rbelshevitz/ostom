@@ -1,5 +1,7 @@
 # OSTOM
 
+> Sometimes, your entire Outlook mailbox is a heavy load to carry.
+
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
@@ -34,6 +36,13 @@ attachments in open export formats instead.
 
 Use a copy of the source file and keep the original unchanged.
 
+The key idea is simple: open OSTOM's result in Thunderbird, then organize the
+messages into IMAP folders there. First load the export into Thunderbird's
+local `Local Folders` and check it. Then create the needed IMAP folders and
+copy or move the messages there. OSTOM recovers readable data; Thunderbird
+displays it and can upload it to the server. OSTOM never connects to IMAP or
+modifies the source PST/OST.
+
 Inspect the structure and save a JSON report:
 
 ```powershell
@@ -55,7 +64,8 @@ separate recovery pass:
 
 Close Thunderbird, copy the resulting `Local Folders` directory into its
 profile, and check the recovered messages and attachments before relying on
-them.
+them. See the [Thunderbird import guide](docs/THUNDERBIRD.md) for the full
+local-then-IMAP workflow.
 
 ## Options
 

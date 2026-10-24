@@ -1,6 +1,24 @@
 # Loading OSTOM output into Thunderbird
 
-OSTOM should export Thunderbird Local Folders in the default mbox layout:
+## The main idea: local first, IMAP second
+
+OSTOM does not upload recovered mail to a server. It produces a normal folder
+tree that Thunderbird can open:
+
+```text
+PST/OST → OSTOM → Thunderbird Local Folders → IMAP account folders
+```
+
+Once the local result is checked, use Thunderbird to upload the messages to
+IMAP. Create the needed server folders, then copy or move messages from
+`Local Folders` into them. Nested folders work the same way. This lets you
+reorganize recovered mail even when OSTOM could not identify the original
+folder for every message.
+
+Check the local copy first. Starting with IMAP can synchronize a mistaken move,
+run into server quotas, or make the result harder to find during a sync error.
+
+OSTOM exports Thunderbird Local Folders in the standard mbox layout:
 
 ```text
 output/
@@ -38,7 +56,22 @@ The profile is normally under:
 %APPDATA%\Thunderbird\Profiles\<profile>\
 ```
 
-For large or uncertain imports, use a new Thunderbird profile or the ImportExportTools NG extension. Import into `Local Folders`, not directly into a live IMAP folder. This prevents local-only recovered messages from being uploaded or merged into the server accidentally.
+For large or uncertain imports, use a new Thunderbird profile or the
+ImportExportTools NG extension. Import into `Local Folders`, not directly into
+a live IMAP folder. This keeps unverified recovered messages off the server.
+
+## Uploading verified mail to IMAP
+
+1. Add or open the target IMAP account in Thunderbird.
+2. Create the target folders and subfolders there.
+3. Select verified messages or a folder under `Local Folders`.
+4. Drag them to the IMAP folder, or use Thunderbird's copy/move commands.
+5. Wait for synchronization and verify several messages, attachments, and
+   nested folders through webmail or another client.
+
+For the first pass, copy rather than move so the local export remains a backup
+copy. Check IMAP quotas, attachment limits, and the server's folder-naming
+rules.
 
 ## Safety rules
 
