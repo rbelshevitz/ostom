@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Options struct {
 	RecoveryScan bool `json:"recovery_scan"`
@@ -22,9 +22,10 @@ type Options struct {
 }
 
 type Fingerprint struct {
-	Size         int64  `json:"size"`
-	ModifiedUTC  string `json:"modified_utc"`
-	HeaderSHA256 string `json:"header_sha256"`
+	Size          int64  `json:"size"`
+	ModifiedUTC   string `json:"modified_utc"`
+	HeaderSHA256  string `json:"header_sha256"`
+	ContentSHA256 string `json:"content_sha256"`
 }
 
 type State struct {
@@ -91,7 +92,7 @@ func Open(exportDir, source string, options Options) (*Store, error) {
 		if err := json.Unmarshal(data, &store.state); err != nil {
 			return nil, fmt.Errorf("read session state: %w", err)
 		}
-		if store.state.Fingerprint != fingerprint || store.state.Source != absoluteSource || store.state.Options != options {
+		if store.state.Version != schemaVersion || store.state.Fingerprint != fingerprint || store.state.Source != absoluteSource || store.state.Options != options {
 			return nil, fmt.Errorf("session fingerprint does not match source")
 		}
 		return store, nil
@@ -142,7 +143,7 @@ func (s *Store) Update(phase, cursor string) error {
 }
 
 func (f Fingerprint) SizeString() string {
-	return fmt.Sprintf("%d:%s:%s", f.Size, f.ModifiedUTC, f.HeaderSHA256)
+	return fmt.Sprintf("%d:%s:%s:%s", f.Size, f.ModifiedUTC, f.HeaderSHA256, f.ContentSHA256)
 }
 
 func fingerprintFile(path string) (Fingerprint, error) {
@@ -162,7 +163,19 @@ func fingerprintFile(path string) (Fingerprint, error) {
 		return Fingerprint{}, fmt.Errorf("read source fingerprint: %w", readErr)
 	}
 	hash := sha256.Sum256(data[:read])
-	return Fingerprint{Size: info.Size(), ModifiedUTC: info.ModTime().UTC().Format(time.RFC3339Nano), HeaderSHA256: hex.EncodeToString(hash[:])}, nil
+	contentHash := sha256.New()
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return Fingerprint{}, fmt.Errorf("rewind source for fingerprint: %w", err)
+	}
+	if _, err := io.CopyBuffer(contentHash, file, make([]byte, 1<<20)); err != nil {
+		return Fingerprint{}, fmt.Errorf("hash source contents: %w", err)
+	}
+	return Fingerprint{
+		Size:          info.Size(),
+		ModifiedUTC:   info.ModTime().UTC().Format(time.RFC3339Nano),
+		HeaderSHA256:  hex.EncodeToString(hash[:]),
+		ContentSHA256: hex.EncodeToString(contentHash.Sum(nil)),
+	}, nil
 }
 
 func (s *Store) save() error {

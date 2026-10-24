@@ -87,6 +87,9 @@ type reportView struct {
 	Assessment struct {
 		RecoveryOutlook string `json:"recovery_outlook"`
 		DeepRecovery    string `json:"deep_recovery"`
+		Integrity       string `json:"integrity"`
+		Summary         string `json:"summary"`
+		SummaryEnglish  string `json:"summary_en"`
 	} `json:"assessment"`
 	Indexed struct {
 		ExportedMessages int    `json:"exported_messages"`
@@ -106,6 +109,12 @@ type reportView struct {
 			Incomplete            int `json:"incomplete"`
 			IncompleteAttachments int `json:"incomplete_attachments"`
 		} `json:"export"`
+		Memory struct {
+			Peak struct {
+				RuntimeBytes    uint64 `json:"runtime_bytes"`
+				WorkingSetBytes uint64 `json:"working_set_bytes"`
+			} `json:"peak"`
+		} `json:"memory"`
 	} `json:"native_recovery"`
 	Storage *struct {
 		AvailableBytes   uint64 `json:"available_bytes"`
@@ -620,9 +629,13 @@ func finishRun(_ hwnd) {
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s: %s\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n", tr("Статус", "Status"), view.Status, tr("Структура", "Structure"), view.Findings.Structure, tr("Сообщения", "Messages"), view.Findings.Messages, tr("Вложения", "Attachments"), view.Findings.Attachments, tr("Шанс восстановления", "Recovery outlook"), view.Assessment.RecoveryOutlook)
+	assessmentSummary := view.Assessment.Summary
+	if englishUI && view.Assessment.SummaryEnglish != "" {
+		assessmentSummary = view.Assessment.SummaryEnglish
+	}
+	fmt.Fprintf(&b, "%s: %s\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n%s: %s\r\n", tr("Статус", "Status"), humanStatus(view.Status), tr("Состояние файла", "File condition"), assessmentSummary, tr("Сообщения", "Messages"), humanFinding(view.Findings.Messages, "messages"), tr("Вложения", "Attachments"), humanFinding(view.Findings.Attachments, "attachments"), tr("Результат восстановления", "Recovery result"), humanOutlook(view.Assessment.RecoveryOutlook))
 	if view.Indexed.Messages > 0 || view.Native.Export.Written > 0 {
-		fmt.Fprintf(&b, "Indexed mbox: %d %s, %d %s; native mbox: %d %s, %d %s\r\n", view.Indexed.Messages, tr("сообщений", "messages"), view.Indexed.Attachments, tr("вложений", "attachments"), view.Native.Export.Written, tr("сообщений", "messages"), view.Native.Export.Attachments, tr("вложений", "attachments"))
+		fmt.Fprintf(&b, "%s: %d %s, %d %s; %s: %d %s, %d %s\r\n", tr("Обычный экспорт", "Regular export"), view.Indexed.Messages, tr("сообщений", "messages"), view.Indexed.Attachments, tr("вложений", "attachments"), tr("Спасательное восстановление", "Salvage recovery"), view.Native.Export.Written, tr("сообщений", "messages"), view.Native.Export.Attachments, tr("вложений", "attachments"))
 	}
 	if view.Indexed.MessagesPartial > 0 || view.Native.Export.Incomplete > 0 || view.Native.Export.IncompleteAttachments > 0 {
 		fmt.Fprintf(&b, "%s: %d %s, %d %s\r\n", tr("Частично записано", "Partial output"), view.Indexed.MessagesPartial+view.Native.Export.Incomplete, tr("сообщений", "messages"), view.Native.Export.IncompleteAttachments, tr("вложений", "attachments"))
@@ -633,20 +646,24 @@ func finishRun(_ hwnd) {
 		if mode == "" {
 			mode = view.Native.EMLMode
 		}
-		fmt.Fprintf(&b, "%s: %s\r\n", tr("Режим файлов", "File mode"), mode)
+		fmt.Fprintf(&b, "%s: %s\r\n", tr("Режим файлов", "File mode"), humanFileMode(mode))
 	}
 	if view.Storage != nil {
 		fmt.Fprintf(&b, "%s: %s; %s: %s\r\n", tr("Свободно на диске", "Free disk space"), humanBytes(view.Storage.AvailableBytes), tr("оценка экспорта", "export estimate"), humanBytes(view.Storage.RequiredEstimate))
 		if view.Storage.Warning != "" {
-			fmt.Fprintf(&b, "%s: %s\r\n", tr("Диск", "Disk"), view.Storage.Warning)
+			fmt.Fprintf(&b, "%s: %s\r\n", tr("Диск", "Disk"), tr("свободного места может не хватить для результата", "available space may be insufficient for the output"))
 		}
 	}
+	if view.Native.Memory.Peak.RuntimeBytes > 0 {
+		fmt.Fprintf(&b, "%s: %s; %s: %s\r\n", tr("Пиковая память Go", "Peak Go runtime memory"), humanBytes(view.Native.Memory.Peak.RuntimeBytes), tr("рабочий набор процесса", "process working set"), humanBytes(view.Native.Memory.Peak.WorkingSetBytes))
+	}
 	if len(view.Warnings) > 0 {
-		fmt.Fprintf(&b, "%s: %s\r\n", tr("Предупреждения", "Warnings"), strings.Join(view.Warnings, "; "))
+		fmt.Fprintf(&b, "%s: %s\r\n", tr("Предупреждения", "Warnings"), humanIssueCount(len(view.Warnings), false))
 	}
 	if len(view.Errors) > 0 {
-		fmt.Fprintf(&b, "%s: %s\r\n", tr("Ошибки", "Errors"), strings.Join(view.Errors, "; "))
+		fmt.Fprintf(&b, "%s: %s\r\n", tr("Ошибки", "Errors"), humanIssueCount(len(view.Errors), true))
 	}
+	fmt.Fprintf(&b, "%s: %s\r\n", tr("Подробный отчёт", "Detailed report"), filepath.Join(getText(state.output), "ostom-report.json"))
 	setText(state.status, b.String())
 }
 
@@ -673,6 +690,86 @@ func humanBytes(value uint64) string {
 	return fmt.Sprintf("%.1f %s", amount, units[unit])
 }
 
+func humanFinding(value, kind string) string {
+	switch value {
+	case "complete":
+		if englishUI {
+			return "readable results found"
+		}
+		return "результат прочитан полностью"
+	case "partial":
+		if englishUI {
+			return "some results are partial"
+		}
+		return "часть результата восстановлена"
+	case "failed":
+		if englishUI {
+			return "could not be read"
+		}
+		return "прочитать не удалось"
+	case "not_checked":
+		if englishUI {
+			return "not checked"
+		}
+		return "не проверялись"
+	default:
+		if kind == "attachments" {
+			return tr("состояние вложений не определено", "attachment status is unknown")
+		}
+		return tr("состояние сообщений не определено", "message status is unknown")
+	}
+}
+
+func humanStatus(value string) string {
+	switch value {
+	case "completed":
+		return tr("Готово", "Completed")
+	case "completed with errors":
+		return tr("Готово, но с ошибками", "Completed with errors")
+	case "failed":
+		return tr("Не удалось завершить", "Could not complete")
+	default:
+		return tr("Результат получен", "Result available")
+	}
+}
+
+func humanIssueCount(count int, errors bool) string {
+	if englishUI {
+		if errors {
+			return fmt.Sprintf("%d error(s); see the detailed report", count)
+		}
+		return fmt.Sprintf("%d warning(s); see the detailed report", count)
+	}
+	if errors {
+		return fmt.Sprintf("%d; подробности сохранены в отчёте", count)
+	}
+	return fmt.Sprintf("%d; подробности сохранены в отчёте", count)
+}
+
+func humanFileMode(value string) string {
+	switch value {
+	case "all":
+		return tr("сообщения и отдельные файлы EML", "messages and individual EML files")
+	case "none":
+		return tr("только дерево почты", "mailbox tree only")
+	default:
+		return tr("обычный режим", "standard mode")
+	}
+}
+
+func humanOutlook(value string) string {
+	switch value {
+	case "good":
+		return tr("обычного чтения должно хватить", "ordinary reading should be sufficient")
+	case "uncertain":
+		return tr("результат не гарантирован; проверяем доступные данные", "the result is uncertain; available data will be checked")
+	case "limited":
+		return tr("доступна только часть данных", "only part of the data is expected to be available")
+	default:
+		return tr("не определён", "unknown")
+	}
+}
+
 func localizedProgressLabel(label string) string {
 	switch label {
 	case "scanning recoverable messages":
@@ -681,7 +778,9 @@ func localizedProgressLabel(label string) string {
 		return tr("Запись восстановленных сообщений", "Writing recovered messages")
 	case "standard mailbox export":
 		return tr("Обычный экспорт почты", "Standard mailbox export")
+	case "preparing recovery":
+		return tr("Подготовка восстановления", "Preparing recovery")
 	default:
-		return label
+		return tr("Идёт обработка", "Processing")
 	}
 }

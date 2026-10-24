@@ -4,7 +4,8 @@
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-OSTOM is a read-only utility for recovering readable mail from Outlook OST/PST files.
+OSTOM is a read-only utility for recovering readable mail from Outlook PST/OST
+files and exporting it to mbox and EML.
 
 OSTOM reads Outlook data files without changing them. When an OST/PST is only
 partly readable, it copies the mail and attachments it can recover into a
@@ -12,6 +13,10 @@ Thunderbird-compatible mbox tree, reports damaged parts, and leaves the source
 file untouched.
 
 In short, OSTOM is a local salvage tool with an honest report:
+
+Writing a new “repaired” PST/OST file is outside OSTOM’s scope. The utility
+does not try to rebuild a replacement Outlook data file; it saves recovered
+messages and attachments in open export formats instead.
 
 - the normal indexed export preserves readable folders and messages;
 - a separate bounded recovery path can find additional messages when the index
@@ -94,6 +99,40 @@ Desktop Runtime; install the x64 .NET 8 Desktop Runtime if Windows reports that
 the application cannot start because a framework is missing.
 
 ## Build and documentation
+
+### Large-file smoke test
+
+Create a two-gigabyte, parser-readable test file with a sparse zero-filled
+tail:
+
+```powershell
+.\tools\make-large-fixture.ps1
+$env:OSTOM_LARGE_PST = (Join-Path (Get-Location) 'testdata\fixtures\large-2gb.pst')
+go test -trimpath -run TestLargePSTRecoverySmoke ./cmd/ostom-fixture
+```
+
+This tests file-size handling, address-based reads, limits, and recovery
+progress. It is not a two-gigabyte mailbox: the valid PST content remains the
+small source fixture, and the tail contains no messages.
+
+To exercise the same run with a bounded Go runtime heap, set a comfortable
+soft limit before starting the test:
+
+```powershell
+$env:GOMEMLIMIT = '512MiB'
+go test -trimpath -run TestLargePSTRecoverySmoke ./cmd/ostom-fixture
+Remove-Item Env:GOMEMLIMIT
+```
+
+`GOMEMLIMIT` is a soft runtime limit, not a promise that the whole Windows
+process can never exceed that amount. OSTOM also keeps recovery bounded by
+payload, block, node, message, and attachment limits; the file size itself is
+never used as a memory allocation size.
+
+Recovery sessions are tied to the exact source contents. Before resuming,
+OSTOM verifies the source size, modification time, header sample, and a full
+streamed SHA-256. The full hash is memory-bounded but adds one sequential read
+of a very large file.
 
 Go 1.24 or newer is required:
 

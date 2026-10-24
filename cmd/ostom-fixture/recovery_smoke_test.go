@@ -51,6 +51,10 @@ func TestSyntheticOSTRecoverySmoke(t *testing.T) {
 	if err != nil || baseScan.Status != "completed" || baseScan.NodesAttempted == 0 {
 		t.Fatalf("healthy recovery pipeline did not run: scan=%+v err=%v", baseScan, err)
 	}
+	baselineMessages := len(baseScan.Messages)
+	if baselineMessages == 0 {
+		t.Fatal("healthy baseline recovered no messages")
+	}
 
 	damages := []string{
 		"header-crc",
@@ -58,6 +62,8 @@ func TestSyntheticOSTRecoverySmoke(t *testing.T) {
 		"truncate",
 		"btree-root",
 		"block-trailer",
+		"payload-byte",
+		"payload-zero-range",
 		"xblock-level",
 		"xblock-count",
 		"subnode-entry",
@@ -97,7 +103,24 @@ func TestSyntheticOSTRecoverySmoke(t *testing.T) {
 				_, _ = format.WalkIndexTrees(path, h, info.Size(), 100000, 64)
 				_ = format.ScanIndexedPayloads(path, h, info.Size(), 256)
 				_ = format.ScanIndexedPropertyContexts(path, h, info.Size(), 64, 32, 1<<20, 256, 16)
-				_, _ = format.CollectIndexedRecoveredMessages(path, h, info.Size(), 64, 32, 1<<20, 256, 32, 256<<10, 16)
+				scan, _ := format.CollectIndexedRecoveredMessages(path, h, info.Size(), 64, 32, 1<<20, 256, 32, 256<<10, 16)
+				if scan.Cleanup != nil {
+					_ = scan.Cleanup()
+				}
+				switch damage {
+				case "header-crc", "declared-size", "payload-byte", "payload-zero-range", "block-trailer", "xblock-level", "xblock-count", "subnode-entry":
+					if scan.Mode != "indexed" {
+						t.Fatalf("payload-level damage unexpectedly changed recovery mode: %q scan=%+v", scan.Mode, scan)
+					}
+					matched, missing := compareMessageKeys(baseScan, scan)
+					if matched != baselineMessages || missing != 0 {
+						t.Fatalf("damage %q lost baseline messages: matched=%d missing=%d baseline=%d scan=%+v", damage, matched, missing, baselineMessages, scan)
+					}
+				case "btree-root", "truncate":
+					if scan.Mode != "salvage" && scan.Status != "BBT locations unavailable" {
+						t.Fatalf("structural damage did not select salvage/unavailable path: mode=%q status=%q", scan.Mode, scan.Status)
+					}
+				}
 			})
 		})
 	}

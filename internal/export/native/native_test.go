@@ -231,3 +231,52 @@ func TestDiscardUncommittedBatches(t *testing.T) {
 		t.Fatalf("committed batch directory was removed: %v", err)
 	}
 }
+
+func TestResumeReusesCommittedAndDiscardsInterruptedBatch(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	committedDir := filepath.Join(workDir, "batches", "000001")
+	if err := os.MkdirAll(filepath.Join(committedDir, "output"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(committedDir, "output", "message"), []byte("committed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(committedDir, "manifest.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputBytes, outputSHA, err := session.DigestArtifact(committedDir, "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, manifestSHA, err := session.DigestArtifact(committedDir, "manifest.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := session.Batch{
+		Number: 1, Status: "committed", Artifact: "output", Bytes: outputBytes, SHA256: outputSHA,
+		Manifest: "manifest.jsonl", ManifestBytes: manifestBytes, ManifestSHA256: manifestSHA,
+		Identities: []string{"native-bid-0001"},
+	}
+	if err := session.WriteBatchRecord(committedDir, committed); err != nil {
+		t.Fatal(err)
+	}
+	interruptedDir := filepath.Join(workDir, "batches", ".writing-crash", "output")
+	if err := os.MkdirAll(interruptedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(interruptedDir, "partial"), []byte("discard me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := discardUncommittedBatches(workDir); err != nil {
+		t.Fatal(err)
+	}
+	batches, completed := loadCommittedBatches(workDir)
+	if len(batches) != 1 || !completed["native-bid-0001"] {
+		t.Fatalf("resume did not retain committed batch: batches=%v completed=%v", batches, completed)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "batches", ".writing-crash")); !os.IsNotExist(err) {
+		t.Fatalf("interrupted batch still exists: %v", err)
+	}
+}

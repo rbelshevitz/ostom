@@ -1303,6 +1303,78 @@ func TestResolveNodeBlocksDistinguishesMissingBIDs(t *testing.T) {
 	}
 }
 
+func TestIndexTreesRequireSalvageSeparatesStructuralDamage(t *testing.T) {
+	goodNBT := IndexTreeScan{nodeBIDs: []nodeRef{{dataBID: 0x100}}, ResolvedData: 1}
+	goodBBT := IndexTreeScan{blockLocations: map[uint64]blockLocation{0x100: {offset: 0, size: 16}}}
+	if indexTreesRequireSalvage(goodNBT, goodBBT) {
+		t.Fatal("readable indexed trees were routed to salvage")
+	}
+	badNBT := goodNBT
+	badNBT.MissingData = 1
+	if !indexTreesRequireSalvage(badNBT, goodBBT) {
+		t.Fatal("missing NBT data was not routed to salvage")
+	}
+	crcOnly := goodNBT
+	crcOnly.CRCInvalid = 1
+	if indexTreesRequireSalvage(crcOnly, goodBBT) {
+		t.Fatal("advisory CRC evidence incorrectly forced salvage")
+	}
+}
+
+func TestBlockCRCExcludesAlignmentPadding(t *testing.T) {
+	payload := []byte("payload with a non-aligned size")
+	block := make([]byte, ((len(payload)+63)/64)*64)
+	copy(block, payload)
+	expected := disk.ComputeCRC(payload)
+	if !blockCRCMatches(block, uint16(len(payload)), expected) {
+		t.Fatal("valid block CRC was rejected")
+	}
+	for index := len(payload); index < len(block); index++ {
+		block[index] = byte(index * 17)
+	}
+	if !blockCRCMatches(block, uint16(len(payload)), expected) {
+		t.Fatal("padding changed the block CRC result")
+	}
+	block[3] ^= 0xff
+	if blockCRCMatches(block, uint16(len(payload)), expected) {
+		t.Fatal("payload corruption was not detected by block CRC")
+	}
+}
+
+func TestBlockLayoutUsesUnicode4KTrailer(t *testing.T) {
+	if alignment, trailerSize := blockLayout(4096); alignment != 512 || trailerSize != 24 {
+		t.Fatalf("4 KiB block layout = (%d, %d), want (512, 24)", alignment, trailerSize)
+	}
+	if alignment, trailerSize := blockLayout(512); alignment != 64 || trailerSize != 16 {
+		t.Fatalf("Unicode block layout = (%d, %d), want (64, 16)", alignment, trailerSize)
+	}
+}
+
+func TestBlockTrailerMatchesUsesRawPayloadCRC(t *testing.T) {
+	payload := []byte("4 KiB OST payload")
+	block := make([]byte, 512+24)
+	copy(block, payload)
+	const bid = uint64(0x100)
+	const offset = uint64(0x3000)
+	trailer := &disk.BlockTrailer{
+		Size:      uint16(len(payload)),
+		Signature: disk.ComputeSignature(bid, offset),
+		CRC:       disk.ComputeCRC(payload),
+		BID:       bid,
+	}
+	if !blockTrailerMatches(block, trailer, bid, offset) {
+		t.Fatal("valid 4 KiB block trailer was rejected")
+	}
+	block[len(payload)+37] = 0xA5
+	if !blockTrailerMatches(block, trailer, bid, offset) {
+		t.Fatal("alignment padding changed a valid 4 KiB block trailer")
+	}
+	block[0] ^= 0xFF
+	if blockTrailerMatches(block, trailer, bid, offset) {
+		t.Fatal("payload corruption was not detected")
+	}
+}
+
 func TestAssembleIndexedPayloadIsBounded(t *testing.T) {
 	path := filepath.Join("..", "..", ".gomodcache", "github.com", "useti", "go-pst", "v6@v6.0.8", "data", "support.pst")
 	if _, err := os.Stat(path); err != nil {
@@ -1438,7 +1510,7 @@ func TestCollectIndexedRecoveredMessagesOnCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scan.Status != "completed" || scan.NodesAttempted == 0 || scan.NodesAttempted > 8 || len(scan.ErrorSamples) > 8 {
+	if scan.Mode != "indexed" || scan.Status != "completed" || scan.NodesAttempted == 0 || scan.NodesAttempted > 8 || len(scan.ErrorSamples) > 8 {
 		t.Fatalf("unexpected bounded native corpus scan: %+v", scan)
 	}
 	for _, message := range scan.Messages {
@@ -1492,7 +1564,10 @@ func TestCollectIndexedRecoveredMessagesFallsBackToBBTSalvage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scan.Mode != "salvage" || scan.Status != "salvage-completed" || scan.NodesAttempted > 8 {
+	if scan.Mode != "salvage" {
+		t.Fatalf("damaged NBT used %q mode, want salvage", scan.Mode)
+	}
+	if scan.Status != "salvage-completed" || scan.NodesAttempted > 8 {
 		t.Fatalf("unexpected BBT salvage result: %+v", scan)
 	}
 }

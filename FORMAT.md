@@ -4,6 +4,10 @@
 
 OSTOM is a practical read-only salvage utility, not a forensic suite. It does not establish chain of custody, promise deleted-item recovery, or bypass password, DPAPI, EFS, BitLocker, or account protections.
 
+Writing a new repaired PST/OST file is outside its scope. OSTOM preserves
+recoverable messages and attachments through mbox/EML export instead of
+rebuilding an Outlook data file.
+
 The primary recovery target is local-only content. OSTOM must inspect and export every physically present folder and item, including Sent, Drafts, Outbox, Conflicts, hidden, custom, and “This computer only” folders. It must not assume that an IMAP/Exchange server contains the complete copy or that a folder name identifies its synchronization status.
 
 OST and PST use the Microsoft PFF/OFF family. The low-level NDB layer contains:

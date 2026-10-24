@@ -2,12 +2,62 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"ostom/internal/format"
 )
+
+func TestRecoveryManifestComparesHealthyBaseline(t *testing.T) {
+	healthy := format.IndexedRecoveredMessageScan{Messages: []format.RecoveredMessage{
+		{NID: 1, BID: 0x100, Attachments: []format.RecoveredAttachment{{NID: 7}}},
+		{NID: 2, BID: 0x104, Incomplete: true},
+	}}
+	damaged := format.IndexedRecoveredMessageScan{Messages: []format.RecoveredMessage{
+		{NID: 1, BID: 0x100, Attachments: []format.RecoveredAttachment{{NID: 7, Incomplete: true}}},
+	}}
+	summary := summarizeRecovery(damaged)
+	if summary.Messages != 1 || summary.Attachments != 1 || summary.PartialAttachments != 1 {
+		t.Fatalf("unexpected recovery summary: %+v", summary)
+	}
+	matched, missing := compareMessageKeys(healthy, damaged)
+	if matched != 1 || missing != 1 {
+		t.Fatalf("message baseline comparison = matched %d missing %d", matched, missing)
+	}
+	if matchedAttachments := compareAttachmentKeys(healthy, damaged); matchedAttachments != 1 {
+		t.Fatalf("attachment baseline comparison = %d, want 1", matchedAttachments)
+	}
+}
+
+func TestDamageManifestCapturesHashesAndMode(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "healthy.pst")
+	damaged := filepath.Join(dir, "damaged.pst")
+	manifestPath := filepath.Join(dir, "damaged.pst.damage.json")
+	if err := os.WriteFile(source, []byte("healthy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(damaged, []byte("damaged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDamageManifest(manifestPath, source, damaged, "pst", "payload-byte"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got damageManifest
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SourceSHA256 == "" || got.DamagedSHA256 == "" || got.ExpectedMode != "indexed" {
+		t.Fatalf("incomplete damage manifest: %+v", got)
+	}
+}
 
 func TestDamageFileHeaderCRC(t *testing.T) {
 	dir := t.TempDir()

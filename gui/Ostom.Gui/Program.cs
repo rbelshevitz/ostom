@@ -32,12 +32,16 @@ internal sealed class MainForm : Form
     private readonly Label progressText = new();
     private Process? child;
     private CancellationTokenSource? cancellation;
+    private bool analysisReady;
+    private string analyzedSource = "";
+    private DateTime lastProgressPaintUtc;
+    private string lastProgressText = "";
 
     private string T(string ru, string english) => en ? english : ru;
 
     public MainForm()
     {
-        Text = T("OSTOM — восстановление PST/OST", "OSTOM — PST/OST recovery");
+        Text = T("OSTOM — восстановление писем из PST/OST", "OSTOM — recover mail from PST/OST");
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(820, 550);
         MinimumSize = new Size(700, 460);
@@ -102,13 +106,11 @@ internal sealed class MainForm : Form
         eml.Margin = new Padding(0, 2, 0, 0);
         actions.Controls.Add(eml);
         ConfigureActionButton(analyze, T("Анализ", "Analyze"));
+        SetActionButtonState(analyze, false);
         analyze.Click += async (_, _) => { if (!string.IsNullOrWhiteSpace(source.Text)) await AnalyzeAsync(source.Text); };
         actions.Controls.Add(analyze);
         ConfigureActionButton(run, T("Экспорт", "Export"));
-        run.BackColor = Color.FromArgb(31, 102, 130);
-        run.ForeColor = Color.White;
-        run.FlatAppearance.BorderColor = Color.FromArgb(31, 102, 130);
-        run.FlatAppearance.MouseOverBackColor = Color.FromArgb(25, 82, 105);
+        SetActionButtonState(run, false, true);
         run.Click += async (_, _) => await RunAsync();
         actions.Controls.Add(run);
         ConfigureActionButton(cancel, T("Отмена", "Cancel"));
@@ -125,7 +127,7 @@ internal sealed class MainForm : Form
         reportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
         reportLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         reportGroup.Controls.Add(reportLayout);
-        progressText.Text = T("Выберите исходный файл", "Choose a source file");
+        progressText.Text = T("Результат появится после анализа", "The analysis result will appear here");
         progressText.Dock = DockStyle.Fill;
         progressText.ForeColor = Color.FromArgb(91, 102, 115);
         progressText.TextAlign = ContentAlignment.MiddleLeft;
@@ -196,6 +198,24 @@ internal sealed class MainForm : Form
         button.Font = new Font("Segoe UI Semibold", 9F);
     }
 
+    private static void SetActionButtonState(Button button, bool enabled, bool primary = false)
+    {
+        button.Enabled = enabled;
+        if (!enabled)
+        {
+            button.BackColor = Color.FromArgb(235, 239, 242);
+            button.ForeColor = Color.FromArgb(155, 164, 172);
+            button.FlatAppearance.BorderColor = Color.FromArgb(210, 218, 224);
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(235, 239, 242);
+            return;
+        }
+
+        button.BackColor = primary ? Color.FromArgb(31, 102, 130) : Color.White;
+        button.ForeColor = primary ? Color.White : Color.FromArgb(35, 67, 86);
+        button.FlatAppearance.BorderColor = primary ? Color.FromArgb(31, 102, 130) : Color.FromArgb(184, 196, 207);
+        button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(25, 82, 105) : Color.FromArgb(226, 238, 244);
+    }
+
     private async Task PickSourceAsync()
     {
         using var dialog = new OpenFileDialog { Filter = T("Файлы Outlook (*.pst;*.ost)|*.pst;*.ost", "Outlook files (*.pst;*.ost)|*.pst;*.ost"), CheckFileExists = true, Multiselect = false };
@@ -204,11 +224,17 @@ internal sealed class MainForm : Form
         if (ext is not ".pst" and not ".ost") return;
         source.Text = dialog.FileName;
         output.Text = dialog.FileName + ".ostom-export";
+        analysisReady = false;
+        analyzedSource = "";
+        SetActionButtonState(run, false, true);
         var size = new FileInfo(dialog.FileName).Length;
         if (size <= AutoAnalyzeLimit)
             await AnalyzeAsync(dialog.FileName);
         else
+        {
+            SetActionButtonState(analyze, true);
             result.Text = T($"Файл большой ({FormatBytes(size)}). Нажмите «Анализ», когда будете готовы проверить содержимое.", $"Large file ({FormatBytes(size)}). Click Analyze when you are ready to inspect its contents.");
+        }
     }
 
     private void PickFolder()
@@ -217,7 +243,6 @@ internal sealed class MainForm : Form
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             output.Text = dialog.SelectedPath;
-            ShowDiskSpace(dialog.SelectedPath);
         }
     }
 
@@ -226,6 +251,11 @@ internal sealed class MainForm : Form
         if (string.IsNullOrWhiteSpace(source.Text) || string.IsNullOrWhiteSpace(output.Text))
         {
             result.Text = T("Укажите исходный файл и папку экспорта.", "Select a source file and an export folder.");
+            return;
+        }
+        if (!analysisReady || !string.Equals(analyzedSource, Path.GetFullPath(source.Text), StringComparison.OrdinalIgnoreCase))
+        {
+            result.Text = T("Сначала выполните анализ файла.", "Analyze the file before exporting.");
             return;
         }
         var cli = Path.Combine(AppContext.BaseDirectory, "ostom.exe");
@@ -263,6 +293,9 @@ internal sealed class MainForm : Form
     private async Task AnalyzeAsync(string file)
     {
         if (child is { HasExited: false }) return;
+        analysisReady = false;
+        analyzedSource = "";
+        SetActionButtonState(run, false, true);
         var cli = Path.Combine(AppContext.BaseDirectory, "ostom.exe");
         if (!File.Exists(cli)) { ShowFriendly(T("Рядом с GUI не найден ostom.exe.", "ostom.exe was not found alongside the GUI.")); return; }
         SetBusy(true);
@@ -275,6 +308,12 @@ internal sealed class MainForm : Form
             args.Add(file);
             var report = await RunCliAsync(cli, args, cancellation.Token);
             ShowReport(report);
+            var parsed = JsonSerializer.Deserialize<GuiReport>(report);
+            if (parsed is not null && parsed.Status != "failed")
+            {
+                analysisReady = true;
+                analyzedSource = Path.GetFullPath(file);
+            }
         }
         catch (OperationCanceledException) { ShowFriendly(T("Анализ отменён.", "Analysis cancelled.")); }
         catch (Exception ex) { ShowFriendly(T("Не удалось выполнить анализ: " + ex.Message, "Analysis failed: " + ex.Message)); }
@@ -320,6 +359,18 @@ internal sealed class MainForm : Form
             var etaSeconds = root.TryGetProperty("eta_seconds", out var etaValue) ? etaValue.GetInt32() : 0;
             var rate = root.TryGetProperty("rate", out var rateValue) ? rateValue.GetDouble() : 0;
             var unit = root.TryGetProperty("unit", out var unitValue) ? unitValue.GetString() ?? "items" : "items";
+            var count = total > 0
+                ? $"{T("Обработано", "Processed")}: {done} {T("из", "of")} {total}"
+                : $"{T("Обработано", "Processed")}: {done}";
+            var suffix = etaKnown
+                ? $" · {T("осталось", "about")} {FormatDuration(etaSeconds)}"
+                : rate > 0
+                    ? $" · {rate:0.0} {FormatRateUnit(unit)}"
+                    : "";
+            var displayText = count + suffix;
+            var now = DateTime.UtcNow;
+            if ((now - lastProgressPaintUtc).TotalMilliseconds < 250) return;
+            lastProgressPaintUtc = now;
             if (!IsDisposed) BeginInvoke(() =>
             {
                 if (total > 0)
@@ -334,15 +385,9 @@ internal sealed class MainForm : Form
                     progress.Visible = true;
                     progress.Style = ProgressBarStyle.Marquee;
                 }
-                var count = total > 0
-                    ? $"{T("Обработано", "Processed")}: {done} {T("из", "of")} {total}"
-                    : $"{T("Обработано", "Processed")}: {done}";
-                var suffix = etaKnown
-                    ? $" · {T("осталось", "about")} {FormatDuration(etaSeconds)}"
-                    : rate > 0
-                        ? $" · {rate:0.0} {FormatRateUnit(unit)}"
-                        : "";
-                progressText.Text = count + suffix;
+                if (lastProgressText == displayText) return;
+                lastProgressText = displayText;
+                progressText.Text = displayText;
             });
         }
         catch (JsonException) { }
@@ -402,7 +447,7 @@ internal sealed class MainForm : Form
                 text.AppendLine($"{T("Рекомендация", "Recommendation")}: {FriendlyOutlook(report.Assessment.RecoveryOutlook, report.Findings.Structure, true, fallbackUsed)}");
             if (report.Analysis is not null)
             {
-                text.AppendLine($"{T("Найдено сообщений-кандидатов", "Messages found for recovery")}: {report.Analysis.Candidates}");
+                text.AppendLine($"{T("Найдено сообщений", "Messages found")}: {report.Analysis.Candidates}");
                 text.AppendLine($"{T("Найдено вложений", "Attachments found for recovery")}: {report.Analysis.Attachments}");
                 if (report.Analysis.IncompleteMessages > 0) text.AppendLine($"{T("Неполных сообщений", "Incomplete messages")}: {report.Analysis.IncompleteMessages}");
                 if (report.Analysis.IncompleteAttachments > 0) text.AppendLine($"{T("Неполных вложений", "Incomplete attachments")}: {report.Analysis.IncompleteAttachments}");
@@ -410,12 +455,15 @@ internal sealed class MainForm : Form
                 if (report.Analysis.LimitReached) text.AppendLine(T("Анализ достиг безопасного лимита; экспорт можно продолжить отдельно.", "The safe analysis limit was reached; export can continue separately."));
             }
             else if (report.CheckOnly) text.AppendLine(T("Это быстрая проверка структуры; содержимое писем и вложений будет проверено во время экспорта.", "This is a fast structural check; message and attachment content will be checked during export."));
-            if (report.Storage is not null && report.Analysis is not null) text.AppendLine($"{T("Свободно на диске", "Free disk space")}: {FormatBytes(report.Storage.AvailableBytes)}; {T("оценка экспорта", "export estimate")}: {FormatBytes(report.Storage.RequiredEstimate)}");
+            if (report.Storage is not null && report.Analysis is not null && report.Analysis.Candidates > 0 && report.Storage.RequiredEstimate > 0) text.AppendLine($"{T("Свободно на диске", "Free disk space")}: {FormatBytes(report.Storage.AvailableBytes)}; {T("оценка экспорта", "export estimate")}: {FormatBytes(report.Storage.RequiredEstimate)}");
             else if (!fallbackUsed && report.IndexedExport is not null) text.AppendLine($"{T("Экспортировано", "Exported")}: {report.IndexedExport.Messages} {T("сообщений", "messages")}, {report.IndexedExport.Attachments} {T("вложений", "attachments")}");
             if (!fallbackUsed && report.NativeRecovery?.Export is not null) text.AppendLine($"{T("Восстановлено", "Recovered")}: {report.NativeRecovery.Export.Written} {T("сообщений", "messages")}, {report.NativeRecovery.Export.Attachments} {T("вложений", "attachments")}");
             foreach (var warning in report.Warnings.Where(w => !w.Equals("check-only mode: export was not requested", StringComparison.OrdinalIgnoreCase) && !w.StartsWith("indexed export: indexed worker exceeded", StringComparison.OrdinalIgnoreCase))) text.AppendLine($"{T("Предупреждение", "Warning")}: {warning}");
             foreach (var error in report.Errors) text.AppendLine($"{T("Ошибка", "Error")}: {error}");
             result.Text = text.ToString();
+            progressText.Text = report.Analysis is not null
+                ? T("Анализ завершён", "Analysis complete")
+                : T("Операция завершена", "Operation complete");
             var reportStatus = FriendlyStatus(report.Status, report.CheckOnly, indexedTimeout && !fallbackUsed, report.Analysis is not null);
             if (report.Errors.Count > 0)
                 SetStatus(reportStatus, Color.FromArgb(251, 235, 235), Color.FromArgb(165, 65, 62));
@@ -449,21 +497,6 @@ internal sealed class MainForm : Form
         _ => value
     };
 
-    private void ShowDiskSpace(string path)
-    {
-        try
-        {
-            var root = Path.GetPathRoot(Path.GetFullPath(path));
-            if (!string.IsNullOrEmpty(root))
-            {
-                var drive = new DriveInfo(root);
-                ShowFriendly($"{T("Свободно на диске", "Free disk space")}: {FormatBytes((ulong)drive.AvailableFreeSpace)}\r\n" +
-                    T("Место проверено; оценка содержимого появится после анализа.", "Space checked; the content estimate will appear after analysis."));
-            }
-        }
-        catch { }
-    }
-
     private string FriendlyFinding(string value, bool checkOnly) => value switch
     {
         "not_checked" when checkOnly => T("будут проверены при экспорте", "will be checked during export"),
@@ -485,7 +518,7 @@ internal sealed class MainForm : Form
     {
         "good" => T("хорошая", "good"),
         "uncertain" => T("нужна проверка повреждённых участков", "some damaged areas need checking"),
-        "limited" => T("ограниченная", "recovery may be limited"),
+        "limited" => T("часть данных может быть недоступна; восстановим всё, что удастся прочитать", "some data may be unavailable; OSTOM will recover everything it can read"),
         _ => value
     };
 
@@ -500,12 +533,17 @@ internal sealed class MainForm : Form
 
     private void SetBusy(bool busy)
     {
-        run.Enabled = !busy;
-        analyze.Enabled = !busy && !string.IsNullOrWhiteSpace(source.Text);
+        if (busy)
+        {
+            lastProgressPaintUtc = DateTime.MinValue;
+            lastProgressText = "";
+        }
+        SetActionButtonState(run, !busy && analysisReady, true);
+        SetActionButtonState(analyze, !busy && !string.IsNullOrWhiteSpace(source.Text));
         eml.Enabled = !busy;
         cancel.Enabled = busy;
         progress.Visible = busy;
-        progressText.Text = busy ? T("Выполняется операция…", "Operation in progress…") : T("Выберите исходный файл", "Choose a source file");
+        if (busy) progressText.Text = T("Выполняется операция…", "Operation in progress…");
         if (busy)
         {
             SetStatus(T("Выполняется", "Working"), Color.FromArgb(255, 245, 224), Color.FromArgb(145, 91, 28));

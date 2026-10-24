@@ -3,7 +3,9 @@ gui/Ostom.Gui/obj/
 .gobuildcache/
 .gomodcache/
 .gopath/
+.tmp-go-cache/
 /ostom.exe
+/ostom-gui.exe
 /ostom-fixture.exe
 /dist/
 /testdata/export-*/

@@ -15,6 +15,7 @@ import (
 
 	"ostom/internal/export/mbox"
 	"ostom/internal/format"
+	"ostom/internal/memory"
 	"ostom/internal/recovery/manifest"
 	recoverySession "ostom/internal/recovery/session"
 )
@@ -62,6 +63,7 @@ type PipelineReport struct {
 	Mode       string                             `json:"mode"`
 	Collection format.IndexedRecoveredMessageScan `json:"collection"`
 	Export     Report                             `json:"export"`
+	Memory     memory.Report                      `json:"memory"`
 }
 
 // RecoverAndExport is the native vertical pipeline: collect bounded message
@@ -89,7 +91,9 @@ func RecoverAndExportWithPhaseProgress(name, root string, h format.Header, fileS
 // recoverAndExportStreaming keeps at most one recovered message in memory.
 // The legacy collection API remains available for callers that need the full
 // result list, while the CLI uses this path for large stores.
-func recoverAndExportStreaming(name, root string, h format.Header, fileSize int64, limits Limits, simpleProgress func(done, total int), phaseProgress func(phase string, done, total int)) (PipelineReport, error) {
+func recoverAndExportStreaming(name, root string, h format.Header, fileSize int64, limits Limits, simpleProgress func(done, total int), phaseProgress func(phase string, done, total int)) (result PipelineReport, returnErr error) {
+	memoryMonitor := memory.Start(250 * time.Millisecond)
+	defer func() { result.Memory = memoryMonitor.Stop() }()
 	if limits.WorkDir == "" {
 		limits.WorkDir = filepath.Join(filepath.Dir(root), ".ostom", "native-work")
 	}

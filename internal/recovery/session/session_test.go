@@ -42,6 +42,9 @@ func TestOpenAndUpdatePersistsHiddenSessionState(t *testing.T) {
 	if state.Phase != "indexed" || !state.Options.FullEML {
 		t.Fatalf("unexpected state: %+v", state)
 	}
+	if state.Version != schemaVersion || state.Fingerprint.ContentSHA256 == "" {
+		t.Fatalf("session has no full source hash: %+v", state.Fingerprint)
+	}
 }
 
 func TestOpenRejectsChangedSourceFingerprint(t *testing.T) {

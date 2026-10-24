@@ -147,6 +147,34 @@ type PayloadScan struct {
 	Status              string `json:"status"`
 }
 
+// OrphanPayloadCandidate is a BBT block that is not reachable from the NBT
+// payload graph. It is only a structural candidate: it is not a message or an
+// attachment until a property context establishes that meaning.
+type OrphanPayloadCandidate struct {
+	BID          uint64   `json:"bid"`
+	Offset       uint64   `json:"offset"`
+	StoredBytes  uint16   `json:"stored_bytes"`
+	Kind         string   `json:"kind"`
+	Evidence     []string `json:"evidence,omitempty"`
+	ChildBIDs    []uint64 `json:"child_bids,omitempty"`
+	ReferencedBy []uint64 `json:"referenced_by,omitempty"`
+	LogicalBytes uint64   `json:"logical_bytes,omitempty"`
+}
+
+// OrphanPayloadScan reports bounded BBT blocks that are not reachable from
+// the indexed NBT graph. It deliberately stops at structural evidence and
+// never promotes an orphan block into a recovered message by itself.
+type OrphanPayloadScan struct {
+	BBTBlocks       int                      `json:"bbt_blocks"`
+	ReachableBlocks int                      `json:"reachable_blocks"`
+	BlocksExamined  int                      `json:"blocks_examined"`
+	BlocksRead      int                      `json:"blocks_read"`
+	ReadErrors      int                      `json:"read_errors"`
+	Candidates      []OrphanPayloadCandidate `json:"candidates,omitempty"`
+	LimitReached    bool                     `json:"limit_reached"`
+	Status          string                   `json:"status"`
+}
+
 // AssemblyResult records bounded logical-payload assembly for one BID.
 type AssemblyResult struct {
 	BlocksRead    int    `json:"blocks_read"`
@@ -515,8 +543,17 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 	nbt, bbt := WalkIndexTrees(name, h, fileSize, 100000, 64)
 	if bbt.blockLocations == nil {
 		_ = collector.Close()
-		scan.Status = "BBT locations unavailable"
-		return scan, nil
+		if consumer != nil {
+			return CollectSalvagedMessagesFromBBTWithConsumerInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir, consumer)
+		}
+		return CollectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir)
+	}
+	if indexTreesRequireSalvage(nbt, bbt) {
+		_ = collector.Close()
+		if consumer != nil {
+			return CollectSalvagedMessagesFromBBTWithConsumerInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir, consumer)
+		}
+		return CollectSalvagedMessagesFromBBTInDir(name, h, fileSize, maxNodes, maxBlocks, maxBytes, maxRecords, maxMessages, maxBodyBytes, maxErrorSamples, progress, workDir)
 	}
 	if len(nbt.nodeBIDs) == 0 && nbt.Status != "valid" {
 		_ = collector.Close()
@@ -661,6 +698,17 @@ func collectIndexedRecoveredMessagesWithAttachmentLimitInDir(name string, h Head
 	}
 	scan.Status = "completed"
 	return scan, nil
+}
+
+// indexTreesRequireSalvage is the structural gate between ordinary indexed
+// recovery and BBT salvage. CRCInvalid is intentionally excluded: CRC is
+// advisory in PFF and must not turn a readable mailbox into salvage mode.
+func indexTreesRequireSalvage(nbt, bbt IndexTreeScan) bool {
+	if len(nbt.nodeBIDs) == 0 || bbt.blockLocations == nil {
+		return true
+	}
+	return nbt.InvalidPages > 0 || nbt.BadRefs > 0 || nbt.MissingData > 0 || nbt.MissingSub > 0 || nbt.Cycles > 0 ||
+		bbt.InvalidPages > 0 || bbt.BadRefs > 0 || bbt.Cycles > 0
 }
 
 // CollectSalvagedMessagesFromBBT attempts message recovery without trusting
@@ -3035,8 +3083,9 @@ func ScanIndexedPayloads(name string, h Header, fileSize int64, maxBlocks int) P
 			scan.ReadErrors++
 			continue
 		}
-		alignedSize := (uint64(location.size) + 63) &^ 63
-		totalSize := alignedSize + 16
+		alignment, trailerSize := blockLayout(h.PageSize)
+		alignedSize := (uint64(location.size) + alignment - 1) &^ (alignment - 1)
+		totalSize := alignedSize + trailerSize
 		if location.offset+totalSize < location.offset || location.offset+totalSize > uint64(fileSize) {
 			scan.ReadErrors++
 			continue
@@ -3052,7 +3101,9 @@ func ScanIndexedPayloads(name string, h Header, fileSize int64, maxBlocks int) P
 		if trailer.Size != location.size {
 			scan.TrailerSizeMismatch++
 		}
-		if trailer.CRC != disk.ComputeCRC(data[:alignedSize]) {
+		// The block CRC covers exactly cb bytes of payload. Alignment padding
+		// between cb and the trailer is explicitly excluded by MS-PST.
+		if !blockCRCMatches(data, location.size, trailer.CRC) {
 			scan.TrailerCRCInvalid++
 		}
 		if trailer.Signature != disk.ComputeSignature(bid, location.offset) {
@@ -3061,7 +3112,7 @@ func ScanIndexedPayloads(name string, h Header, fileSize int64, maxBlocks int) P
 		if trailer.BID != bid {
 			scan.TrailerBIDInvalid++
 		}
-		if trailer.Size != location.size || trailer.BID == 0 || disk.ValidateBlockTrailer(data, &trailer, bid, location.offset) != nil {
+		if trailer.Size != location.size || trailer.BID == 0 || !blockTrailerMatches(data, &trailer, bid, location.offset) {
 			scan.TrailersInvalid++
 		} else {
 			scan.TrailersValid++
@@ -3130,6 +3181,181 @@ func ScanIndexedPayloads(name string, h Header, fileSize int64, maxBlocks int) P
 	scan.BlocksDiscovered = len(ids)
 	scan.Status = "completed"
 	return scan
+}
+
+// ScanOrphanPayloads performs a bounded structural pass over BBT leaf blocks.
+// Blocks reachable from NBT data/subnode roots and their typed payload trees
+// are excluded. The remaining readable blocks are reported as candidates,
+// with no claim that they contain a complete or semantically valid item.
+func ScanOrphanPayloads(name string, h Header, fileSize int64, maxBlocks, maxCandidates int) OrphanPayloadScan {
+	scan := OrphanPayloadScan{Status: "not applicable"}
+	if fileSize <= 0 || maxBlocks <= 0 || maxCandidates < 0 {
+		return scan
+	}
+	nbt, bbt := WalkIndexTrees(name, h, fileSize, 100000, 64)
+	if bbt.blockLocations == nil {
+		scan.Status = "BBT locations unavailable"
+		return scan
+	}
+	scan.BBTBlocks = len(bbt.blockLocations)
+	f, err := os.Open(name)
+	if err != nil {
+		scan.Status = "unavailable: " + err.Error()
+		return scan
+	}
+	defer f.Close()
+	source := indexedPayloadSource{file: f, locations: bbt.blockLocations, fileSize: fileSize, method: h.CryptMethod, pageSize: h.PageSize, format: headerPSTFormat(h)}
+
+	reachable := make(map[uint64]bool)
+	queue := make([]uint64, 0, len(nbt.nodeBIDs)*2)
+	enqueue := func(bid uint64) {
+		if bid != 0 && !reachable[bid] {
+			reachable[bid] = true
+			queue = append(queue, bid)
+		}
+	}
+	for _, node := range nbt.nodeBIDs {
+		enqueue(node.dataBID)
+		enqueue(node.subnodeBID)
+	}
+	for index := 0; index < len(queue); index++ {
+		if index >= maxBlocks {
+			scan.LimitReached = true
+			break
+		}
+		payload, err := source.Payload(queue[index])
+		if err != nil {
+			continue
+		}
+		if len(payload) < 4 {
+			continue
+		}
+		switch payload[0] {
+		case 0x01:
+			level := payload[1]
+			if level != 1 && level != 2 {
+				continue
+			}
+			block, err := parseExtendedBlockBounded(payload, source.PSTFormat(), level)
+			if err != nil {
+				continue
+			}
+			for _, child := range block.BIDs {
+				enqueue(child)
+			}
+		case 0x02:
+			block, err := parseSubnodeBlockBoundedForPage(payload, h.PageSize)
+			if err != nil {
+				continue
+			}
+			if block.IsLeaf() {
+				for _, entry := range block.LeafEntries {
+					enqueue(entry.DataBID)
+					enqueue(entry.SubBID)
+				}
+			} else {
+				for _, entry := range block.NonleafEntries {
+					enqueue(entry.SubBID)
+				}
+			}
+		}
+	}
+	scan.ReachableBlocks = len(reachable)
+
+	bids := make([]uint64, 0, len(bbt.blockLocations))
+	for bid := range bbt.blockLocations {
+		if !reachable[bid] {
+			bids = append(bids, bid)
+		}
+	}
+	sort.Slice(bids, func(i, j int) bool { return bids[i] < bids[j] })
+	for _, bid := range bids {
+		if scan.BlocksExamined >= maxBlocks {
+			scan.LimitReached = true
+			break
+		}
+		scan.BlocksExamined++
+		location := bbt.blockLocations[bid]
+		payload, err := source.Payload(bid)
+		if err != nil {
+			scan.ReadErrors++
+			continue
+		}
+		scan.BlocksRead++
+		candidate := OrphanPayloadCandidate{
+			BID: bid, Offset: location.offset, StoredBytes: location.size,
+			Evidence: []string{"bbt_leaf_unreferenced", "readable_payload"},
+		}
+		switch payloadKind := byteAt(payload, 0); payloadKind {
+		case 0x01:
+			candidate.Kind = "extended"
+			candidate.Evidence = append(candidate.Evidence, "extended_block_signature")
+			if block, parseErr := parseExtendedBlockBounded(payload, source.PSTFormat(), payload[1]); parseErr == nil {
+				candidate.ChildBIDs = append(candidate.ChildBIDs, block.BIDs...)
+				candidate.LogicalBytes = uint64(block.TotalSize)
+				candidate.Evidence = append(candidate.Evidence, "extended_block_parsed")
+			}
+		case 0x02:
+			candidate.Kind = "subnode"
+			candidate.Evidence = append(candidate.Evidence, "subnode_block_signature")
+		case 0:
+			candidate.Kind = "empty"
+			candidate.Evidence = append(candidate.Evidence, "empty_payload")
+		default:
+			candidate.Kind = "external"
+			candidate.Evidence = append(candidate.Evidence, "external_data_candidate")
+		}
+		if len(scan.Candidates) < maxCandidates {
+			scan.Candidates = append(scan.Candidates, candidate)
+		} else {
+			scan.LimitReached = true
+			break
+		}
+	}
+	byBID := make(map[uint64]*OrphanPayloadCandidate, len(scan.Candidates))
+	for index := range scan.Candidates {
+		byBID[scan.Candidates[index].BID] = &scan.Candidates[index]
+	}
+	for index := range scan.Candidates {
+		candidate := &scan.Candidates[index]
+		for _, childBID := range candidate.ChildBIDs {
+			child, ok := byBID[childBID]
+			if !ok {
+				continue
+			}
+			child.ReferencedBy = append(child.ReferencedBy, candidate.BID)
+			child.Evidence = append(child.Evidence, "referenced_by_orphan_block")
+		}
+	}
+	scan.Status = "completed"
+	return scan
+}
+
+// blockCRCMatches validates the CRC over cb bytes only. The caller may pass a
+// full aligned block; bytes after cb are padding and must not affect the
+// result.
+func blockCRCMatches(block []byte, cb uint16, expected uint32) bool {
+	if uint64(cb) > uint64(len(block)) {
+		return false
+	}
+	return disk.ComputeCRC(block[:cb]) == expected
+}
+
+// blockTrailerMatches validates the fields that identify a block and its
+// payload. The dependency's generic validator includes alignment padding in
+// the CRC, but MS-PST defines dwCRC over exactly cb raw payload bytes.
+func blockTrailerMatches(block []byte, trailer *disk.BlockTrailer, bid, offset uint64) bool {
+	return trailer != nil &&
+		blockCRCMatches(block, trailer.Size, trailer.CRC) &&
+		trailer.Signature == disk.ComputeSignature(bid, offset) &&
+		trailer.BID == bid
+}
+
+func byteAt(data []byte, index int) byte {
+	if index < 0 || index >= len(data) {
+		return 0
+	}
+	return data[index]
 }
 
 func walkIndexTree(name string, root uint64, pageSize int, fileSize int64, expectedType byte, maxPages, maxDepth int) IndexTreeScan {

@@ -57,24 +57,25 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 func (b *boundedOutput) String() string { return string(b.data) }
 
 type report struct {
-	Source        string                     `json:"source"`
-	SourceBytes   int64                      `json:"source_bytes"`
-	Header        format.Header              `json:"header"`
-	IndexRoots    format.IndexRootScan       `json:"index_roots"`
-	Assessment    format.IntegrityAssessment `json:"assessment"`
-	Findings      Findings                   `json:"findings"`
-	Storage       *StorageAssessment         `json:"storage,omitempty"`
-	RecoveryScan  bool                       `json:"recovery_scan"`
-	CheckOnly     bool                       `json:"check_only"`
-	RecoveryRun   string                     `json:"recovery_run"`
-	Indexed       *gopst.Report              `json:"indexed_export,omitempty"`
-	IndexedStatus string                     `json:"indexed_status,omitempty"`
-	Native        *native.PipelineReport     `json:"native_recovery,omitempty"`
-	Analysis      *AnalysisReport            `json:"analysis,omitempty"`
-	Status        string                     `json:"status"`
-	Errors        []string                   `json:"errors,omitempty"`
-	Warnings      []string                   `json:"warnings,omitempty"`
-	Elapsed       string                     `json:"elapsed"`
+	Source         string                     `json:"source"`
+	SourceBytes    int64                      `json:"source_bytes"`
+	Header         format.Header              `json:"header"`
+	IndexRoots     format.IndexRootScan       `json:"index_roots"`
+	Assessment     format.IntegrityAssessment `json:"assessment"`
+	Findings       Findings                   `json:"findings"`
+	Storage        *StorageAssessment         `json:"storage,omitempty"`
+	RecoveryScan   bool                       `json:"recovery_scan"`
+	CheckOnly      bool                       `json:"check_only"`
+	RecoveryRun    string                     `json:"recovery_run"`
+	Indexed        *gopst.Report              `json:"indexed_export,omitempty"`
+	IndexedStatus  string                     `json:"indexed_status,omitempty"`
+	Native         *native.PipelineReport     `json:"native_recovery,omitempty"`
+	Analysis       *AnalysisReport            `json:"analysis,omitempty"`
+	OrphanPayloads *format.OrphanPayloadScan  `json:"orphan_payloads,omitempty"`
+	Status         string                     `json:"status"`
+	Errors         []string                   `json:"errors,omitempty"`
+	Warnings       []string                   `json:"warnings,omitempty"`
+	Elapsed        string                     `json:"elapsed"`
 }
 
 type AnalysisReport struct {
@@ -285,6 +286,8 @@ func main() {
 			}
 		}
 	} else if *checkOnly {
+		orphanScan := format.ScanOrphanPayloads(source, h, info.Size(), 4096, 1024)
+		r.OrphanPayloads = &orphanScan
 		r.Warnings = append(r.Warnings, "check-only mode: export was not requested")
 	} else {
 		r.Warnings = append(r.Warnings, "no export directory supplied; inspection only")
@@ -881,6 +884,9 @@ func runNativeWorker(source, output string, quiet, fullEML bool, workDir, journa
 	if limits.WorkDir == "" {
 		limits.WorkDir = filepath.Join(filepath.Dir(output), ".ostom", "native-work")
 	}
+	if !quiet {
+		printProgress("preparing recovery", 0, 0)
+	}
 	result, err := safeNativeExport(source, output, h, info.Size(), limits, progress)
 	if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
 		fmt.Fprintf(os.Stderr, "encode native worker report: %v\n", encodeErr)
@@ -907,6 +913,9 @@ func runNativeAnalyzeWorker(source string, quiet bool) {
 		if !quiet {
 			printProgress(userProgressPhase(phase), done, total)
 		}
+	}
+	if !quiet {
+		printProgress("preparing recovery", 0, 0)
 	}
 	result, err := safeNativeAnalyze(source, h, info.Size(), defaultNativeLimits(false), progress)
 	if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
@@ -1050,6 +1059,8 @@ func userProgressPhase(phase string) string {
 		return "scanning recoverable messages"
 	case "analyzing recoverable messages":
 		return "analyzing recoverable messages"
+	case "preparing recovery":
+		return "preparing recovery"
 	case "writing native recovery output":
 		return "writing recovered messages"
 	default:

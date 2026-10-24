@@ -33,12 +33,22 @@ adjacent recovery CLI.
 - File-picker and action buttons use equal widths and aligned baselines.
   Export is the primary action; Analyze is secondary; Cancel is only enabled
   during work.
+- Keep Export disabled until the selected source has completed a successful
+  analysis. A damaged file may still be exported after analysis; analysis
+  completion means that the report was produced, not that the file is healthy.
+- Disabled action buttons must also look disabled (pale fill, muted text and
+  border), not merely reject clicks. Analyze is disabled until a PST/OST file
+  has been selected; for large files it becomes available without starting
+  the analysis automatically.
 - Keep the report area larger than the input chrome. Prefer concise status
   summaries or cards; put verbose technical details behind disclosure when
   the UI supports it.
 - The current compact layout uses `Источник и экспорт` / `Source and export`,
   `Результат` / `Result`, a bottom status strip, and a separate processed-count
   line above the progress bar. Preserve this hierarchy when adjusting layout.
+- Progress text, especially ETA, must be throttled and updated only when the
+  displayed value changes; rapid CLI progress events must not make the label
+  visibly flicker.
 
 ## State and feedback
 
@@ -84,3 +94,10 @@ those code paths are changed. If the icon or project packaging changes, also
 verify the window/taskbar icon in a packaged build rather than only in the
 source tree; the source `ostom.ico` should not be required beside the
 published EXE.
+
+## Packaging size invariant
+
+- Prefer one compact framework-dependent `ostom-gui.exe` plus the adjacent
+  `ostom.exe` CLI. Do not publish a self-contained .NET runtime into the GUI
+  executable unless the user explicitly requests a standalone package; that
+  produces a 100+ MB GUI and is not the normal MVP shape.

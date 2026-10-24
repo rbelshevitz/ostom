@@ -4,7 +4,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -22,7 +25,7 @@ import (
 func main() {
 	out := flag.String("out", "testdata/fixtures/sample.pst", "fixture path")
 	kind := flag.String("kind", "pst", "pst, ost, or eml")
-	damage := flag.String("damage", "", "none, header-crc, declared-size, truncate, btree-root, block-trailer, xblock-level, xblock-count, or subnode-entry")
+	damage := flag.String("damage", "", "none, header-crc, declared-size, truncate, btree-root, block-trailer, payload-byte, payload-zero-range, xblock-level, xblock-count, or subnode-entry")
 	source := flag.String("source", "", "known-good PST source; defaults to the dependency's sample.pst")
 	messages := flag.Int("messages", 0, "minimum indexed messages required in the source fixture")
 	emlCount := flag.Int("eml-count", 6, "number of deterministic EML messages when -kind eml")
@@ -90,7 +93,191 @@ func main() {
 	if err := damageFile(*out, *damage); err != nil {
 		fatalf("damage fixture: %v", err)
 	}
+	if *damage != "" && *damage != "none" {
+		if err := writeDamageManifest(*out+".damage.json", base, *out, *kind, *damage); err != nil {
+			fatalf("write damage manifest: %v", err)
+		}
+	}
 	fmt.Printf("created %s (%s, damage=%s)\n", *out, *kind, valueOrNone(*damage))
+}
+
+type damageManifest struct {
+	Source                   string `json:"source"`
+	SourceSHA256             string `json:"source_sha256"`
+	Damaged                  string `json:"damaged"`
+	DamagedSHA256            string `json:"damaged_sha256"`
+	Kind                     string `json:"kind"`
+	Damage                   string `json:"damage"`
+	ExpectedMode             string `json:"expected_mode"`
+	ExpectedNote             string `json:"expected_note"`
+	SourceMessages           int    `json:"source_messages,omitempty"`
+	SourceMode               string `json:"source_recovery_mode,omitempty"`
+	SourceRecovered          int    `json:"source_recovered_messages,omitempty"`
+	SourcePartial            int    `json:"source_partial_messages,omitempty"`
+	SourceAttachments        int    `json:"source_attachments,omitempty"`
+	SourcePartialAttachments int    `json:"source_partial_attachments,omitempty"`
+	RecoveryMode             string `json:"recovery_mode,omitempty"`
+	TriedNodes               int    `json:"tried_nodes,omitempty"`
+	Recovered                int    `json:"recovered_messages,omitempty"`
+	Partial                  int    `json:"partial_messages,omitempty"`
+	RecoveredAttachments     int    `json:"recovered_attachments,omitempty"`
+	PartialAttachments       int    `json:"partial_attachments,omitempty"`
+	MatchedMessages          int    `json:"matched_baseline_messages,omitempty"`
+	MissingMessages          int    `json:"missing_baseline_messages,omitempty"`
+	MatchedAttachments       int    `json:"matched_baseline_attachments,omitempty"`
+	RecoveryErrors           int    `json:"recovery_errors,omitempty"`
+}
+
+func writeDamageManifest(path, source, damaged, kind, damage string) error {
+	sourceHash, err := sha256File(source)
+	if err != nil {
+		return fmt.Errorf("hash source: %w", err)
+	}
+	damagedHash, err := sha256File(damaged)
+	if err != nil {
+		return fmt.Errorf("hash damaged fixture: %w", err)
+	}
+	manifest := damageManifest{
+		Source: source, SourceSHA256: sourceHash, Damaged: damaged,
+		DamagedSHA256: damagedHash, Kind: kind, Damage: damage,
+		ExpectedMode: expectedRecoveryMode(damage),
+		ExpectedNote: "compare recovered messages and attachments with the healthy source; do not treat no-panic as recovery success",
+	}
+	if messages, countErr := countMessages(source); countErr == nil {
+		manifest.SourceMessages = messages
+	}
+	if evidence, recoveryErr := measureRecovery(source); recoveryErr == nil {
+		manifest.SourceMode = evidence.Mode
+		sourceSummary := summarizeRecovery(evidence)
+		manifest.SourceRecovered = sourceSummary.Messages
+		manifest.SourcePartial = sourceSummary.PartialMessages
+		manifest.SourceAttachments = sourceSummary.Attachments
+		manifest.SourcePartialAttachments = sourceSummary.PartialAttachments
+		if damagedEvidence, damagedErr := measureRecovery(damaged); damagedErr == nil {
+			damagedSummary := summarizeRecovery(damagedEvidence)
+			manifest.RecoveryMode = damagedEvidence.Mode
+			manifest.TriedNodes = damagedEvidence.NodesAttempted
+			manifest.Recovered = damagedSummary.Messages
+			manifest.Partial = damagedSummary.PartialMessages
+			manifest.RecoveredAttachments = damagedSummary.Attachments
+			manifest.PartialAttachments = damagedSummary.PartialAttachments
+			manifest.MatchedMessages, manifest.MissingMessages = compareMessageKeys(evidence, damagedEvidence)
+			manifest.MatchedAttachments = compareAttachmentKeys(evidence, damagedEvidence)
+			manifest.RecoveryErrors = damagedEvidence.Errors
+		}
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+type recoverySummary struct {
+	Messages           int
+	PartialMessages    int
+	Attachments        int
+	PartialAttachments int
+}
+
+func summarizeRecovery(scan format.IndexedRecoveredMessageScan) recoverySummary {
+	var summary recoverySummary
+	for _, message := range scan.Messages {
+		summary.Messages++
+		if message.Incomplete {
+			summary.PartialMessages++
+		}
+		for _, attachment := range message.Attachments {
+			summary.Attachments++
+			if attachment.Incomplete {
+				summary.PartialAttachments++
+			}
+		}
+	}
+	return summary
+}
+
+func compareMessageKeys(source, damaged format.IndexedRecoveredMessageScan) (matched, missing int) {
+	damagedKeys := make(map[string]bool, len(damaged.Messages))
+	for _, message := range damaged.Messages {
+		damagedKeys[recoveryMessageKey(message)] = true
+	}
+	seen := make(map[string]bool, len(source.Messages))
+	for _, message := range source.Messages {
+		key := recoveryMessageKey(message)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if damagedKeys[key] {
+			matched++
+		} else {
+			missing++
+		}
+	}
+	return matched, missing
+}
+
+func compareAttachmentKeys(source, damaged format.IndexedRecoveredMessageScan) int {
+	damagedKeys := make(map[string]bool)
+	for _, message := range damaged.Messages {
+		for _, attachment := range message.Attachments {
+			damagedKeys[recoveryAttachmentKey(message, attachment)] = true
+		}
+	}
+	matched := 0
+	for _, message := range source.Messages {
+		for _, attachment := range message.Attachments {
+			if damagedKeys[recoveryAttachmentKey(message, attachment)] {
+				matched++
+			}
+		}
+	}
+	return matched
+}
+
+func recoveryMessageKey(message format.RecoveredMessage) string {
+	return fmt.Sprintf("%016x:%016x", message.NID, message.BID)
+}
+
+func recoveryAttachmentKey(message format.RecoveredMessage, attachment format.RecoveredAttachment) string {
+	return fmt.Sprintf("%s:%016x", recoveryMessageKey(message), attachment.NID)
+}
+
+func measureRecovery(filename string) (format.IndexedRecoveredMessageScan, error) {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return format.IndexedRecoveredMessageScan{}, err
+	}
+	h := format.ReadHeader(filename)
+	scan, err := format.CollectIndexedRecoveredMessages(filename, h, info.Size(), 256, 128, 4<<20, 1024, 128, 1<<20, 64)
+	if scan.Cleanup != nil {
+		_ = scan.Cleanup()
+	}
+	return scan, err
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func expectedRecoveryMode(damage string) string {
+	switch damage {
+	case "btree-root", "truncate":
+		return "salvage"
+	default:
+		return "indexed"
+	}
 }
 
 func parseSize(value string) (int64, error) {
@@ -321,6 +508,26 @@ func damageFile(filename, damage string) error {
 		if err := damageFirstBlockTrailer(filename, b); err != nil {
 			return err
 		}
+	case "payload-byte":
+		if err := mutateFirstExternalPayload(filename, b, func(payload []byte) error {
+			payload[0] ^= 0xff
+			return nil
+		}); err != nil {
+			return err
+		}
+	case "payload-zero-range":
+		if err := mutateFirstExternalPayload(filename, b, func(payload []byte) error {
+			count := len(payload)
+			if count > 32 {
+				count = 32
+			}
+			for i := 0; i < count; i++ {
+				payload[i] = 0
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 	case "xblock-level":
 		if err := mutateFirstInternalPayload(filename, b, func(payload []byte) bool {
 			return len(payload) >= 8 && payload[0] == 0x01 && (payload[1] == 1 || payload[1] == 2)
@@ -377,6 +584,38 @@ func damageFirstBlockTrailer(filename string, b []byte) error {
 	}
 	aligned := (uint64(selected.Size) + 63) &^ 63
 	b[selected.Offset+aligned+4] ^= 0xff
+	return nil
+}
+
+func mutateFirstExternalPayload(filename string, b []byte, mutate func([]byte) error) error {
+	h := format.ReadHeader(filename)
+	locations, err := format.IndexedBlockLocations(filename, h, int64(len(b)), 100000, 64)
+	if err != nil {
+		return fmt.Errorf("locate BBT blocks: %w", err)
+	}
+	var selected format.IndexedBlockLocation
+	found := false
+	for _, location := range locations {
+		if location.BID&0x2 != 0 || location.Size == 0 {
+			continue
+		}
+		end := location.Offset + uint64(location.Size)
+		if end < location.Offset || end > uint64(len(b)) {
+			continue
+		}
+		if !found || location.Offset < selected.Offset {
+			selected, found = location, true
+		}
+	}
+	if !found {
+		return fmt.Errorf("no external data block found")
+	}
+	end := selected.Offset + uint64(selected.Size)
+	payload := b[selected.Offset:end]
+	if err := mutate(payload); err != nil {
+		return err
+	}
+	copy(b[selected.Offset:end], payload)
 	return nil
 }
 
