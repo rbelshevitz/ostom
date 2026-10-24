@@ -97,11 +97,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $notes = @"
-          ## OSTOM $env:GITHUB_REF_NAME
-
-          Faster indexed PST/OST recovery and safer large-file diagnostics.
-          Windows x64 package includes the CLI and compact GUI; the GUI requires
-          the .NET 8 Desktop Runtime.
+          Read-only recovery of readable messages and attachments from PST/OST files.
+          Exports to mbox and EML, with structural analysis, bounded recovery,
+          large-file handling, and resumable export. The utility does not write
+          a new repaired PST/OST file. The Windows x64 package includes the CLI
+          and compact GUI; the GUI requires the .NET 8 Desktop Runtime.
           "@
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Set-Content -Path $notesPath -Value $notes
