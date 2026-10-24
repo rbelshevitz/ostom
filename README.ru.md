@@ -1,6 +1,6 @@
 # OSTOM
 
-> Иногда вся почта Outlook — тяжёлый груз.
+> Иногда вся почта в Outlook — тяжёлый груз.
 
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
