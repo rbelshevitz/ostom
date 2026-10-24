@@ -1,6 +1,6 @@
 # OSTOM
 
-[en](README.md) | [ru](README.ru.md) | [he](README.he.md)
+[en](README.md) | [es](README.es.md) | [fr](README.fr.md) | [de](README.de.md) | [ru](README.ru.md) | [he](README.he.md)
 
 > Иногда вся почта в Outlook — тяжёлый груз.
 
