@@ -1,6 +1,6 @@
 # Charger la sortie d’OSTOM dans Thunderbird
 
-[en](THUNDERBIRD.md) | [es](THUNDERBIRD.es.md) | [fr](THUNDERBIRD.fr.md) | [de](THUNDERBIRD.de.md) | [ru](THUNDERBIRD.ru.md) | [he](THUNDERBIRD.he.md)
+[en](THUNDERBIRD.md) | [es](THUNDERBIRD.es.md) | [fr](THUNDERBIRD.fr.md) | [de](THUNDERBIRD.de.md) | [nl](THUNDERBIRD.nl.md) | [ja](THUNDERBIRD.ja.md) | [ru](THUNDERBIRD.ru.md) | [he](THUNDERBIRD.he.md)
 
 ## L’idée principale : d’abord en local, puis dans IMAP
 

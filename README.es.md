@@ -1,8 +1,8 @@
 # OSTOM
 
-[en](README.md) | [es](README.es.md) | [fr](README.fr.md) | [de](README.de.md) | [ru](README.ru.md) | [he](README.he.md)
+[en](README.md) | [es](README.es.md) | [fr](README.fr.md) | [de](README.de.md) | [nl](README.nl.md) | [ja](README.ja.md) | [ru](README.ru.md) | [he](README.he.md)
 
-> A veces, todo el correo en Outlook es una carga pesada.
+> Outlook guarda muchos mensajes. OSTOM ayuda a recuperarlos.
 
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)

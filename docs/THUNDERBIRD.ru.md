@@ -1,5 +1,7 @@
 # Загрузка результата OSTOM в Thunderbird
 
+[en](THUNDERBIRD.md) | [es](THUNDERBIRD.es.md) | [fr](THUNDERBIRD.fr.md) | [de](THUNDERBIRD.de.md) | [nl](THUNDERBIRD.nl.md) | [ja](THUNDERBIRD.ja.md) | [ru](THUNDERBIRD.ru.md) | [he](THUNDERBIRD.he.md)
+
 ## Главная идея: сначала локально, потом в IMAP
 
 OSTOM сам не отправляет восстановленные письма на почтовый сервер. На выходе

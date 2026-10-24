@@ -1,5 +1,7 @@
 # Loading OSTOM output into Thunderbird
 
+[en](THUNDERBIRD.md) | [es](THUNDERBIRD.es.md) | [fr](THUNDERBIRD.fr.md) | [de](THUNDERBIRD.de.md) | [nl](THUNDERBIRD.nl.md) | [ja](THUNDERBIRD.ja.md) | [ru](THUNDERBIRD.ru.md) | [he](THUNDERBIRD.he.md)
+
 ## The main idea: local first, IMAP second
 
 OSTOM does not upload recovered mail to a server. It produces a normal folder
