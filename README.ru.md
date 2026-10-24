@@ -1,5 +1,7 @@
 # OSTOM
 
+[en](README.md) | [ru](README.ru.md) | [he](README.he.md)
+
 > Иногда вся почта в Outlook — тяжёлый груз.
 
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)

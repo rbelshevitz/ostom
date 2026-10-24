@@ -1,5 +1,7 @@
 # OSTOM
 
+[en](README.md) | [ru](README.ru.md) | [he](README.he.md)
+
 > Sometimes, all your mail in Outlook feels like a heavy load.
 
 [![CI](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml/badge.svg)](https://github.com/rbelshevitz/ostom/actions/workflows/ci.yml)
