@@ -264,7 +264,7 @@ truncated.
   in the GUI for Russian and English regions.
 - [x] Add a small GUI smoke checklist for empty input, missing CLI, cancelled
   work, failed export, partial recovery, and successful export; see
-  `gui/GUI-SMOKE.md`.
+  `docs/GUI-SMOKE.md`.
 
 ## Current baseline
 

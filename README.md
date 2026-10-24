@@ -16,6 +16,12 @@ In short, OSTOM is a local recovery tool with an honest report. Writing a new
 “repaired” PST/OST file is outside its scope. It saves recovered messages and
 attachments in open export formats instead.
 
+<p align="center">
+  <img src="docs/accountant-recovered-mail.png"
+       alt="Happy accountant celebrating recovered email"
+       width="900">
+</p>
+
 - the normal indexed export preserves readable folders and messages;
 - a separate bounded recovery path can find additional messages when the index
   is damaged;
@@ -97,10 +103,10 @@ go build -trimpath -o ostom.exe ./cmd/ostom
 go test -trimpath ./...
 ```
 
-- [Format and recovery details](FORMAT.md)
-- [Thunderbird import](THUNDERBIRD.md)
-- [Development plan](TODO.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md)
+- [Format and recovery details](docs/FORMAT.md)
+- [Thunderbird import](docs/THUNDERBIRD.md)
+- [Development plan](docs/TODO.md)
+- [Third-party notices](docs/THIRD_PARTY_NOTICES.md)
 
 OSTOM is independent of Microsoft and does not send source data over the
 network. Release binaries are currently unsigned; verify downloaded archives
