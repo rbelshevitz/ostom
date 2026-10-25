@@ -8,12 +8,12 @@
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/install)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-OSTOM je nástroj pracující pouze pro čtení, který obnovuje čitelné e-maily ze souborů
+OSTOM je nástroj pracující v režimu jen pro čtení, který obnovuje čitelné e-maily ze souborů
 Outlook PST/OST a exportuje je do formátů mbox a EML.
 
 OSTOM čte datové soubory Outlooku, aniž by je měnil. Pokud je soubor OST/PST
-čitelný jen částečně, zkopíruje dostupné e-maily a přílohy do stromu mbox
-kompatibilního s Thunderbirdem, nahlásí poškozené části a ponechá zdrojový
+čitelný jen částečně, zkopíruje dostupné e-maily a přílohy do struktury mbox
+kompatibilní s Thunderbirdem, nahlásí poškozené části a ponechá zdrojový
 soubor beze změny.
 
 Stručně řečeno: OSTOM je lokální nástroj pro obnovu s transparentním protokolem.
