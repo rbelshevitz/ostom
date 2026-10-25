@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OSTOM — восстановление почты Outlook</title>
+  <meta name="description" content="OSTOM — read-only утилита для восстановления читаемых писем из повреждённых Outlook PST и OST файлов.">
+  <meta property="og:title" content="OSTOM — Outlook PST/OST Recovery">
+  <meta property="og:description" content="Восстановление читаемых писем и вложений без изменения исходного файла.">
+  <meta property="og:image" content="recovered-mail.png">
+  <meta name="theme-color" content="#102a43">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="OSTOM — главная">OSTOM</a>
+    <nav aria-label="Основная навигация">
+      <a href="#how">Как работает</a>
+      <a href="#start">Быстрый старт</a>
+      <a href="https://github.com/rbelshevitz/ostom/blob/main/docs/THUNDERBIRD.ru.md">Импорт в Thunderbird</a>
+      <span class="language-label">README:</span>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.md">EN</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.ru.md">RU</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.de.md">DE</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.es.md">ES</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.fr.md">FR</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.nl.md">NL</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.ja.md">JA</a>
+      <a class="language" href="https://github.com/rbelshevitz/ostom/blob/main/README.he.md">HE</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Outlook PST/OST recovery</p>
+        <h1>Верните читаемую почту из повреждённого Outlook-файла.</h1>
+        <p class="lead">OSTOM бережно извлекает письма и вложения из PST/OST, экспортирует их в открытые форматы и оставляет исходный файл нетронутым.</p>
+        <div class="actions">
+          <a class="button primary" href="#start">Начать восстановление</a>
+          <a class="button secondary" href="https://github.com/rbelshevitz/ostom">Открыть на GitHub</a>
+        </div>
+        <p class="trust">Только чтение · локальная работа · mbox и EML · честный отчёт</p>
+      </div>
+      <div class="hero-art">
+        <img src="recovered-mail.png" alt="Пользователь радуется восстановленной почте">
+      </div>
+    </section>
+
+    <section class="section intro" id="how">
+      <div class="section-heading">
+        <p class="eyebrow">Что делает OSTOM</p>
+        <h2>Не «чинит» файл — спасает то, что ещё можно прочитать.</h2>
+        <p>Если Outlook открывает PST или OST только частично, OSTOM переносит доступные письма и вложения в Thunderbird-совместимый экспорт и отдельно показывает повреждённые участки.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature"><span class="feature-number">01</span><h3>Исходник остаётся цел</h3><p>Утилита работает в режиме read-only и не перезаписывает PST/OST.</p></article>
+        <article class="feature"><span class="feature-number">02</span><h3>Экспорт без закрытого формата</h3><p>Результат можно открыть в Thunderbird и сохранить как mbox или отдельные EML.</p></article>
+        <article class="feature"><span class="feature-number">03</span><h3>Отчёт без ложных обещаний</h3><p>Экспортированные, частичные, неудачные и дублированные результаты различаются.</p></article>
+      </div>
+    </section>
+
+    <section class="section start" id="start">
+      <div class="section-heading compact">
+        <p class="eyebrow">Быстрый старт</p>
+        <h2>Работайте с копией исходного файла.</h2>
+        <p>Соберите результат в отдельную папку, затем проверьте его в Thunderbird до удаления оригинала или резервной копии.</p>
+      </div>
+      <div class="command-card">
+        <div class="command-label">Проверить структуру и сохранить отчёт</div>
+        <code>.\ostom.exe -json -output-dir E:\recovered source-copy.ost</code>
+        <div class="command-label">Экспортировать читаемые письма</div>
+        <code>.\ostom.exe -export-dir E:\recovered source-copy.ost</code>
+        <div class="command-label">Запустить дополнительное восстановление</div>
+        <code>.\ostom.exe -recovery-scan -export-dir E:\recovered source-copy.ost</code>
+      </div>
+    </section>
+
+    <section class="section links">
+      <div><p class="eyebrow">Документация</p><h2>После восстановления</h2></div>
+      <div class="link-list">
+        <a href="https://github.com/rbelshevitz/ostom/blob/main/docs/THUNDERBIRD.ru.md"><span>Импорт в Thunderbird</span><span>→</span></a>
+        <a href="https://github.com/rbelshevitz/ostom/blob/main/docs/FORMAT.ru.md"><span>Формат и детали восстановления</span><span>→</span></a>
+        <a href="https://github.com/rbelshevitz/ostom/blob/main/docs/TODO.ru.md"><span>План разработки</span><span>→</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>OSTOM · Outlook PST/OST recovery</span>
+    <span>Независим от Microsoft · исходные данные не покидают компьютер</span>
+  </footer>
+</body>
+</html>
