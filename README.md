@@ -1,6 +1,6 @@
 # OSTOM
 
-[en](README.md) | [es](README.es.md) | [fr](README.fr.md) | [de](README.de.md) | [nl](README.nl.md) | [ja](README.ja.md) | [ru](README.ru.md) | [he](README.he.md)
+[en](README.md) | [cs](README.cs.md) | [es](README.es.md) | [fr](README.fr.md) | [de](README.de.md) | [nl](README.nl.md) | [ja](README.ja.md) | [ru](README.ru.md) | [he](README.he.md)
 
 > Sometimes, Outlook stores too many emails.
 
@@ -123,3 +123,5 @@ go test -trimpath ./...
 OSTOM is independent of Microsoft and does not send source data over the
 network. Release binaries are currently unsigned; verify downloaded archives
 with their published SHA-256 checksums.
+
+This utility is not affiliated with any Czech or Slovak company.
